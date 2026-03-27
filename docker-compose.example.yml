@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: postgres
+    volumes:
+      - db:/var/lib/postgresql/data
+
+  app:
+    image: ghcr.io/tt-rss/tt-rss:latest
+    restart: unless-stopped
+    environment:
+      TTRSS_DB_HOST: db
+      TTRSS_DB_PORT: 5432
+      TTRSS_DB_USER: postgres
+      TTRSS_DB_PASS: password
+      TTRSS_DB_NAME: postgres
+      TTRSS_SELF_URL_PATH: http://localhost:8280/tt-rss
+    depends_on:
+      - db
+    volumes:
+      - app:/var/www/html
+
+  updater:
+    image: ghcr.io/tt-rss/tt-rss:latest
+    restart: unless-stopped
+    environment:
+      TTRSS_DB_HOST: db
+      TTRSS_DB_PORT: 5432
+      TTRSS_DB_USER: postgres
+      TTRSS_DB_PASS: password
+      TTRSS_DB_NAME: postgres
+      TTRSS_SELF_URL_PATH: http://localhost:8280/tt-rss
+    depends_on:
+      - app
+    volumes:
+      - app:/var/www/html
+    command: /opt/tt-rss/updater.sh
+
+  web-nginx:
+    image: ghcr.io/tt-rss/tt-rss-web-nginx:latest
+    restart: unless-stopped
+    ports:
+      - "8280:80"
+    depends_on:
+      - app
+    volumes:
+      - app:/var/www/html:ro
+
+  translator:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      - db
+    env_file:
+      - ./translator.env
+
+volumes:
+  db:
+  app:

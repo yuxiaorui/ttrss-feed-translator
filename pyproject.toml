@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ttrss-feed-translator"
+version = "0.1.0"
+description = "Standalone translator sidecar for Tiny Tiny RSS PostgreSQL installs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12.3",
+  "psycopg[binary]>=3.2.1",
+  "requests>=2.32.3",
+]
+
+[project.scripts]
+ttrss-feed-translator = "ttrss_feed_translator.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

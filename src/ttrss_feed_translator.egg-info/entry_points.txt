@@ -1,0 +1,2 @@
+[console_scripts]
+ttrss-feed-translator = ttrss_feed_translator.__main__:main
