@@ -148,6 +148,7 @@ docker compose -f docker-compose.example.yml logs -f translator
 
 - 会和正文里的文本节点尽量合并到同一批次翻译
 - 标题本身仍按纯文本处理，不保留 HTML
+- 多篇短文章也会尽量合并进同一轮翻译请求
 
 ### 正文
 

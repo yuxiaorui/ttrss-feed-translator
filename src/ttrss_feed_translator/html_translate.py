@@ -25,6 +25,32 @@ class TextNodeRef:
     suffix: str
 
 
+@dataclass
+class PreparedTitleAndHtmlTranslation:
+    title: str
+    html: str
+    soup: BeautifulSoup | None
+    refs: tuple[TextNodeRef, ...]
+    texts: tuple[str, ...]
+    title_included: bool
+
+    def apply_translations(self, translated: list[str]) -> tuple[str, str]:
+        if len(translated) != len(self.texts):
+            raise ValueError("translator returned a different number of text items")
+
+        translated_title = self.title
+        html_translations = translated
+        if self.title_included:
+            translated_title = translated[0]
+            html_translations = translated[1:]
+
+        translated_html = self.html
+        if self.refs:
+            translated_html = _replace_text_nodes(self.soup, list(self.refs), html_translations)
+
+        return translated_title, translated_html
+
+
 def _split_whitespace(text: str) -> tuple[str, str, str]:
     match = re.match(r"^(\s*)(.*?)(\s*)$", text, flags=re.DOTALL)
     if match is None:
@@ -77,11 +103,10 @@ def _replace_text_nodes(
     return soup.decode(formatter="html")
 
 
-def translate_title_and_html(
+def prepare_title_and_html_translation(
     title: str,
     html: str,
-    translator: TextBatchTranslator,
-) -> tuple[str, str]:
+) -> PreparedTitleAndHtmlTranslation:
     refs: list[TextNodeRef] = []
     soup: BeautifulSoup | None = None
 
@@ -95,19 +120,27 @@ def translate_title_and_html(
         payload.append(title)
 
     payload.extend(ref.core for ref in refs)
-    if not payload:
+    return PreparedTitleAndHtmlTranslation(
+        title=title,
+        html=html,
+        soup=soup,
+        refs=tuple(refs),
+        texts=tuple(payload),
+        title_included=title_index is not None,
+    )
+
+
+def translate_title_and_html(
+    title: str,
+    html: str,
+    translator: TextBatchTranslator,
+) -> tuple[str, str]:
+    prepared = prepare_title_and_html_translation(title, html)
+    if not prepared.texts:
         return title, html
 
-    translated = translator.translate_texts(payload)
-    if len(translated) != len(payload):
-        raise ValueError("translator returned a different number of text items")
-
-    translated_title = title if title_index is None else translated[title_index]
-    translated_html = html
-    if refs:
-        translated_html = _replace_text_nodes(soup, refs, translated[-len(refs) :])
-
-    return translated_title, translated_html
+    translated = translator.translate_texts(list(prepared.texts))
+    return prepared.apply_translations(translated)
 
 
 def translate_html(html: str, translator: TextBatchTranslator) -> str:

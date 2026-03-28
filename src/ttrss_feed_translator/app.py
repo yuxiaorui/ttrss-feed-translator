@@ -13,8 +13,11 @@ from ttrss_feed_translator.db import (
     save_translation,
     sync_generated_tags,
 )
-from ttrss_feed_translator.html_translate import translate_title_and_html
-from ttrss_feed_translator.models import EntryCandidate
+from ttrss_feed_translator.html_translate import (
+    prepare_title_and_html_translation,
+    translate_title_and_html,
+)
+from ttrss_feed_translator.models import EntryCandidate, ProcessingPlan
 from ttrss_feed_translator.tags import merge_tags
 from ttrss_feed_translator.translator import OpenAICompatibleTranslator
 from ttrss_feed_translator.workflow import plan_entry
@@ -40,6 +43,12 @@ class TagPlan:
     persist: bool
 
 
+@dataclass(frozen=True)
+class PlannedCandidate:
+    candidate: EntryCandidate
+    plan: ProcessingPlan
+
+
 def run_once(config: AppConfig) -> RunStats:
     stats = RunStats()
     translator = OpenAICompatibleTranslator(config)
@@ -63,16 +72,16 @@ def run_once(config: AppConfig) -> RunStats:
         candidates = fetch_candidates(conn, config)
         logger.info("fetched %s candidate articles", len(candidates))
 
+        translation_queue: list[PlannedCandidate] = []
         for candidate in candidates:
-            try:
-                _process_candidate(conn, candidate, config, translator, stats)
-                conn.commit()
-            except Exception as exc:
-                conn.rollback()
-                logger.exception("entry %s failed: %s", candidate.entry_id, exc)
-                record_error(conn, candidate, str(exc))
-                conn.commit()
-                stats.failed += 1
+            planned_candidate = _plan_candidate(candidate, config)
+            if planned_candidate.plan.action == "translate":
+                translation_queue.append(planned_candidate)
+                continue
+
+            _process_candidate_safely(conn, planned_candidate, config, translator, stats)
+
+        _process_translation_batch(conn, translation_queue, config, translator, stats)
 
     logger.info(
         "finished run: translated=%s reapplied=%s skipped=%s failed=%s tagged=%s",
@@ -85,15 +94,8 @@ def run_once(config: AppConfig) -> RunStats:
     return stats
 
 
-def _process_candidate(
-    conn,
-    candidate: EntryCandidate,
-    config: AppConfig,
-    translator: OpenAICompatibleTranslator,
-    stats: RunStats,
-) -> None:
+def _plan_candidate(candidate: EntryCandidate, config: AppConfig) -> PlannedCandidate:
     plan = plan_entry(candidate, config.target_language, config.require_single_owner)
-
     logger.info(
         "entry=%s feed=%s action=%s reason=%s",
         candidate.entry_id,
@@ -101,6 +103,114 @@ def _process_candidate(
         plan.action,
         plan.reason,
     )
+    return PlannedCandidate(candidate=candidate, plan=plan)
+
+
+def _process_candidate_safely(
+    conn,
+    planned_candidate: PlannedCandidate,
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+    stats: RunStats,
+    translated_entry: tuple[str, str] | None = None,
+) -> None:
+    try:
+        _process_candidate(
+            conn,
+            planned_candidate,
+            config,
+            translator,
+            stats,
+            translated_entry=translated_entry,
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.exception("entry %s failed: %s", planned_candidate.candidate.entry_id, exc)
+        record_error(conn, planned_candidate.candidate, str(exc))
+        conn.commit()
+        stats.failed += 1
+
+
+def _process_translation_batch(
+    conn,
+    planned_candidates: list[PlannedCandidate],
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+    stats: RunStats,
+) -> None:
+    if not planned_candidates:
+        return
+
+    try:
+        translated_entries = _translate_planned_candidates_in_batch(planned_candidates, translator)
+    except Exception:
+        logger.warning(
+            "batch translation failed for %s entries; falling back to per-entry translation",
+            len(planned_candidates),
+            exc_info=True,
+        )
+        for planned_candidate in planned_candidates:
+            _process_candidate_safely(conn, planned_candidate, config, translator, stats)
+        return
+
+    for planned_candidate, translated_entry in zip(
+        planned_candidates,
+        translated_entries,
+        strict=True,
+    ):
+        _process_candidate_safely(
+            conn,
+            planned_candidate,
+            config,
+            translator,
+            stats,
+            translated_entry=translated_entry,
+        )
+
+
+def _translate_planned_candidates_in_batch(
+    planned_candidates: list[PlannedCandidate],
+    translator: OpenAICompatibleTranslator,
+) -> list[tuple[str, str]]:
+    prepared_translations = []
+    batch_payload: list[str] = []
+    spans: list[tuple[int, int]] = []
+
+    for planned_candidate in planned_candidates:
+        if planned_candidate.plan.action != "translate":
+            raise ValueError("batch translation only supports translate actions")
+
+        prepared = prepare_title_and_html_translation(
+            planned_candidate.plan.source_title,
+            planned_candidate.plan.source_content,
+        )
+        start = len(batch_payload)
+        batch_payload.extend(prepared.texts)
+        spans.append((start, len(prepared.texts)))
+        prepared_translations.append(prepared)
+
+    translated_payload = translator.translate_texts(batch_payload) if batch_payload else []
+    if len(translated_payload) != len(batch_payload):
+        raise ValueError("translator returned a different number of batched text items")
+
+    translated_entries: list[tuple[str, str]] = []
+    for prepared, (start, size) in zip(prepared_translations, spans, strict=True):
+        translated_entries.append(prepared.apply_translations(translated_payload[start : start + size]))
+
+    return translated_entries
+
+
+def _process_candidate(
+    conn,
+    planned_candidate: PlannedCandidate,
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+    stats: RunStats,
+    translated_entry: tuple[str, str] | None = None,
+) -> None:
+    candidate = planned_candidate.candidate
+    plan = planned_candidate.plan
 
     if plan.action == "skip":
         tag_plan = _plan_tag_sync(candidate, plan, config, translator)
@@ -128,11 +238,15 @@ def _process_candidate(
         stats.reapplied += 1
         return
 
-    translated_title, translated_content = translate_title_and_html(
-        plan.source_title,
-        plan.source_content,
-        translator,
-    )
+    if translated_entry is None:
+        translated_title, translated_content = translate_title_and_html(
+            plan.source_title,
+            plan.source_content,
+            translator,
+        )
+    else:
+        translated_title, translated_content = translated_entry
+
     generated_tags = _generate_ai_tags(candidate, plan.source_title, plan.source_content, config, translator)
 
     if config.dry_run:
