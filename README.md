@@ -146,7 +146,8 @@ docker compose -f docker-compose.example.yml logs -f translator
 
 ### 标题
 
-- 作为纯文本单独翻译
+- 会和正文里的文本节点尽量合并到同一批次翻译
+- 标题本身仍按纯文本处理，不保留 HTML
 
 ### 正文
 
@@ -154,6 +155,7 @@ docker compose -f docker-compose.example.yml logs -f translator
 - 只提取文本节点翻译
 - `script/style/noscript/code/pre/textarea/svg/math` 默认跳过
 - 标签结构、属性、链接地址不会送去翻译
+- 如果标题加正文文本节点总量超过单次请求限制，仍会按 `TRANSLATOR_MAX_TEXTS_PER_REQUEST` / `TRANSLATOR_MAX_CHARS_PER_REQUEST` 自动拆批
 
 ### AI 补标签
 

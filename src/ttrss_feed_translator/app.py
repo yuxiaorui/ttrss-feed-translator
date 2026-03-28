@@ -13,7 +13,7 @@ from ttrss_feed_translator.db import (
     save_translation,
     sync_generated_tags,
 )
-from ttrss_feed_translator.html_translate import translate_html
+from ttrss_feed_translator.html_translate import translate_title_and_html
 from ttrss_feed_translator.models import EntryCandidate
 from ttrss_feed_translator.tags import merge_tags
 from ttrss_feed_translator.translator import OpenAICompatibleTranslator
@@ -128,8 +128,11 @@ def _process_candidate(
         stats.reapplied += 1
         return
 
-    translated_title = _translate_title(plan.source_title, translator)
-    translated_content = translate_html(plan.source_content, translator)
+    translated_title, translated_content = translate_title_and_html(
+        plan.source_title,
+        plan.source_content,
+        translator,
+    )
     generated_tags = _generate_ai_tags(candidate, plan.source_title, plan.source_content, config, translator)
 
     if config.dry_run:
@@ -155,12 +158,6 @@ def _process_candidate(
         if generated_tags:
             stats.tagged += 1
     stats.translated += 1
-
-
-def _translate_title(title: str, translator: OpenAICompatibleTranslator) -> str:
-    if not title.strip():
-        return title
-    return translator.translate_texts([title])[0]
 
 
 def _generate_ai_tags(

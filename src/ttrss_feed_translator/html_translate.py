@@ -62,15 +62,11 @@ def _collect_text_nodes(html: str) -> tuple[BeautifulSoup, list[TextNodeRef]]:
     return soup, refs
 
 
-def translate_html(html: str, translator: TextBatchTranslator) -> str:
-    if not html.strip():
-        return html
-
-    soup, refs = _collect_text_nodes(html)
-    if not refs:
-        return html
-
-    translated = translator.translate_texts([ref.core for ref in refs])
+def _replace_text_nodes(
+    soup: BeautifulSoup,
+    refs: list[TextNodeRef],
+    translated: list[str],
+) -> str:
     if len(translated) != len(refs):
         raise ValueError("translator returned a different number of text nodes")
 
@@ -80,3 +76,39 @@ def translate_html(html: str, translator: TextBatchTranslator) -> str:
 
     return soup.decode(formatter="html")
 
+
+def translate_title_and_html(
+    title: str,
+    html: str,
+    translator: TextBatchTranslator,
+) -> tuple[str, str]:
+    refs: list[TextNodeRef] = []
+    soup: BeautifulSoup | None = None
+
+    if html.strip():
+        soup, refs = _collect_text_nodes(html)
+
+    payload: list[str] = []
+    title_index: int | None = None
+    if title.strip():
+        title_index = len(payload)
+        payload.append(title)
+
+    payload.extend(ref.core for ref in refs)
+    if not payload:
+        return title, html
+
+    translated = translator.translate_texts(payload)
+    if len(translated) != len(payload):
+        raise ValueError("translator returned a different number of text items")
+
+    translated_title = title if title_index is None else translated[title_index]
+    translated_html = html
+    if refs:
+        translated_html = _replace_text_nodes(soup, refs, translated[-len(refs) :])
+
+    return translated_title, translated_html
+
+
+def translate_html(html: str, translator: TextBatchTranslator) -> str:
+    return translate_title_and_html("", html, translator)[1]
