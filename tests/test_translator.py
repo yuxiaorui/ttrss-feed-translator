@@ -120,6 +120,8 @@ def _make_config() -> AppConfig:
         api_key="test-key",
         model="gpt-test",
         request_timeout_seconds=120,
+        mercury_fulltext_api_base_url="",
+        mercury_fulltext_request_timeout_seconds=30,
         tagging_api_base_url="https://api.openai.com/v1",
         tagging_api_key="test-key",
         tagging_model="gpt-test",

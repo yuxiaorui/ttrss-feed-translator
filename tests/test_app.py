@@ -78,6 +78,26 @@ class FakeTranslator:
         return mapping[title]
 
 
+class FakeFulltextClient:
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        content_by_url: dict[str, str | None] | None = None,
+        failing_urls: set[str] | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.content_by_url = content_by_url or {}
+        self.failing_urls = failing_urls or set()
+        self.calls: list[str] = []
+
+    def fetch_content(self, url: str) -> str | None:
+        self.calls.append(url)
+        if url in self.failing_urls:
+            raise RuntimeError("mercury_fulltext unavailable")
+        return self.content_by_url.get(url)
+
+
 class AppBatchTests(unittest.TestCase):
     def test_collect_translation_queue_paginates_until_batch_is_full(self) -> None:
         translation_translator = FakeTranslator()
@@ -202,6 +222,7 @@ class AppBatchTests(unittest.TestCase):
                         _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
                     ],
                     _make_config(),
+                    FakeFulltextClient(),
                     translation_translator,
                     tagging_translator,
                     stats,
@@ -252,6 +273,7 @@ class AppBatchTests(unittest.TestCase):
                     _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
                 ],
                 _make_config(ai_tagging_enabled=True),
+                FakeFulltextClient(),
                 translation_translator,
                 tagging_translator,
                 stats,
@@ -301,6 +323,7 @@ class AppBatchTests(unittest.TestCase):
                         _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
                     ],
                     _make_config(ai_tagging_enabled=True),
+                    FakeFulltextClient(),
                     translation_translator,
                     tagging_translator,
                     stats,
@@ -339,6 +362,7 @@ class AppBatchTests(unittest.TestCase):
                         ),
                     ],
                     _make_config(ai_tagging_enabled=True, dry_run=True),
+                    FakeFulltextClient(),
                     translation_translator,
                     tagging_translator,
                     stats,
@@ -386,14 +410,109 @@ class AppBatchTests(unittest.TestCase):
         self.assertEqual(preview_mock.call_args.kwargs["translated_content"], "<p>已翻译正文</p>")
         self.assertEqual(stats.skipped, 1)
 
+    def test_translation_batch_uses_mercury_fulltext_content_when_available(self) -> None:
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator()
+        fulltext_client = FakeFulltextClient(
+            enabled=True,
+            content_by_url={
+                "https://example.com/articles/1": "<p>First body</p><div>Extra details</div>",
+            },
+        )
+        conn = FakeConn()
+        stats = RunStats()
+        saved_entries: list[tuple[int, str, str]] = []
 
-def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedCandidate:
+        with patch("ttrss_feed_translator.app.save_translation") as save_translation_mock:
+            save_translation_mock.side_effect = (
+                lambda *args, **kwargs: saved_entries.append(
+                    (
+                        kwargs["candidate"].entry_id,
+                        kwargs["translated_title"],
+                        kwargs["translated_content"],
+                    )
+                )
+            )
+
+            _process_translation_batch(
+                conn,
+                [
+                    _make_planned_candidate(
+                        1,
+                        "First title",
+                        "<p>Second body</p>",
+                        link="https://example.com/articles/1",
+                    ),
+                ],
+                _make_config(),
+                fulltext_client,
+                translation_translator,
+                tagging_translator,
+                stats,
+            )
+
+        self.assertEqual(fulltext_client.calls, ["https://example.com/articles/1"])
+        self.assertEqual(translation_translator.calls, [["First title", "First body", "Extra details"]])
+        self.assertEqual(saved_entries, [(1, "标题一", "<p>正文一</p><div>额外细节</div>")])
+
+    def test_translation_batch_falls_back_when_mercury_fulltext_fetch_fails(self) -> None:
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator()
+        fulltext_client = FakeFulltextClient(
+            enabled=True,
+            failing_urls={"https://example.com/articles/1"},
+        )
+        conn = FakeConn()
+        stats = RunStats()
+        saved_entries: list[tuple[int, str, str]] = []
+
+        with patch("ttrss_feed_translator.app.save_translation") as save_translation_mock:
+            save_translation_mock.side_effect = (
+                lambda *args, **kwargs: saved_entries.append(
+                    (
+                        kwargs["candidate"].entry_id,
+                        kwargs["translated_title"],
+                        kwargs["translated_content"],
+                    )
+                )
+            )
+
+            _process_translation_batch(
+                conn,
+                [
+                    _make_planned_candidate(
+                        1,
+                        "First title",
+                        "<p>First body</p>",
+                        link="https://example.com/articles/1",
+                    ),
+                ],
+                _make_config(),
+                fulltext_client,
+                translation_translator,
+                tagging_translator,
+                stats,
+            )
+
+        self.assertEqual(fulltext_client.calls, ["https://example.com/articles/1"])
+        self.assertEqual(translation_translator.calls, [["First title", "First body"]])
+        self.assertEqual(saved_entries, [(1, "标题一", "<p>正文一</p>")])
+
+
+def _make_planned_candidate(
+    entry_id: int,
+    title: str,
+    content: str,
+    *,
+    link: str = "https://example.com/articles/default",
+) -> PlannedCandidate:
     candidate = EntryCandidate(
         entry_id=entry_id,
         owner_uid=1,
         user_entry_id=entry_id,
         feed_id=61,
         feed_title="Example Feed",
+        link=link,
         title=title,
         content=content,
         current_tags=(),
@@ -438,6 +557,7 @@ def _make_translated_candidate() -> EntryCandidate:
         user_entry_id=1,
         feed_id=61,
         feed_title="Example Feed",
+        link="https://example.com/articles/1",
         title="已翻译标题",
         content="<p>已翻译正文</p>",
         current_tags=(),
@@ -469,6 +589,8 @@ def _make_config(
         api_key="test-key",
         model="gpt-test",
         request_timeout_seconds=120,
+        mercury_fulltext_api_base_url="",
+        mercury_fulltext_request_timeout_seconds=30,
         tagging_api_base_url="https://api.openai.com/v1",
         tagging_api_key="test-key",
         tagging_model="gpt-test",

@@ -76,6 +76,8 @@ class AppConfig:
     api_key: str
     model: str
     request_timeout_seconds: int
+    mercury_fulltext_api_base_url: str
+    mercury_fulltext_request_timeout_seconds: int
     tagging_api_base_url: str
     tagging_api_key: str
     tagging_model: str
@@ -95,6 +97,12 @@ class AppConfig:
         api_key = _require("TRANSLATOR_API_KEY")
         model = _require("TRANSLATOR_MODEL")
         request_timeout_seconds = _parse_int("TRANSLATOR_REQUEST_TIMEOUT_SECONDS", 120, minimum=1)
+        mercury_fulltext_api_base_url = os.getenv("TRANSLATOR_MERCURY_FULLTEXT_API_BASE_URL", "").strip()
+        mercury_fulltext_request_timeout_seconds = _parse_int(
+            "TRANSLATOR_MERCURY_FULLTEXT_REQUEST_TIMEOUT_SECONDS",
+            30,
+            minimum=1,
+        )
         tagging_api_base_url = os.getenv("TRANSLATOR_TAGGING_API_BASE_URL", "").strip() or api_base_url
         tagging_api_key = os.getenv("TRANSLATOR_TAGGING_API_KEY", "").strip() or api_key
         tagging_model = os.getenv("TRANSLATOR_TAGGING_MODEL", "").strip() or model
@@ -119,6 +127,8 @@ class AppConfig:
             api_key=api_key,
             model=model,
             request_timeout_seconds=request_timeout_seconds,
+            mercury_fulltext_api_base_url=mercury_fulltext_api_base_url.rstrip("/"),
+            mercury_fulltext_request_timeout_seconds=mercury_fulltext_request_timeout_seconds,
             tagging_api_base_url=tagging_api_base_url.rstrip("/"),
             tagging_api_key=tagging_api_key,
             tagging_model=tagging_model,

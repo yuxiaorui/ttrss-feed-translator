@@ -31,6 +31,7 @@ class EntryCandidate:
     user_entry_id: int
     feed_id: int | None
     feed_title: str
+    link: str
     title: str
     content: str
     current_tags: tuple[str, ...]

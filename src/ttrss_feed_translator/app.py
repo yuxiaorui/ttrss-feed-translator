@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 
 from ttrss_feed_translator.config import AppConfig
@@ -17,9 +17,11 @@ from ttrss_feed_translator.html_translate import (
     prepare_title_and_html_translation,
     translate_title_and_html,
 )
+from ttrss_feed_translator.fulltext import MercuryFulltextClient
 from ttrss_feed_translator.models import EntryCandidate, ProcessingPlan
 from ttrss_feed_translator.tags import extract_text_for_tagging, merge_tags
 from ttrss_feed_translator.translator import OpenAICompatibleTranslator, TagGenerationRequest
+from ttrss_feed_translator.utils import compute_source_hash
 from ttrss_feed_translator.workflow import plan_entry
 
 
@@ -53,6 +55,7 @@ class PlannedCandidate:
 
 def run_once(config: AppConfig) -> RunStats:
     stats = RunStats()
+    fulltext_client = MercuryFulltextClient(config)
     translation_translator = OpenAICompatibleTranslator(config)
     tagging_translator = OpenAICompatibleTranslator.for_tagging(config)
 
@@ -83,6 +86,7 @@ def run_once(config: AppConfig) -> RunStats:
             conn,
             translation_queue,
             config,
+            fulltext_client,
             translation_translator,
             tagging_translator,
             stats,
@@ -198,12 +202,15 @@ def _process_translation_batch(
     conn,
     planned_candidates: list[PlannedCandidate],
     config: AppConfig,
+    fulltext_client: MercuryFulltextClient,
     translation_translator: OpenAICompatibleTranslator,
     tagging_translator: OpenAICompatibleTranslator,
     stats: RunStats,
 ) -> None:
     if not planned_candidates:
         return
+
+    planned_candidates = _prepare_translation_batch_sources(planned_candidates, fulltext_client)
 
     try:
         translated_entries = _translate_planned_candidates_in_batch(
@@ -249,6 +256,72 @@ def _process_translation_batch(
             translated_entry=translated_entry,
             generated_tags=generated_tags,
         )
+
+
+def _prepare_translation_batch_sources(
+    planned_candidates: list[PlannedCandidate],
+    fulltext_client: MercuryFulltextClient,
+) -> list[PlannedCandidate]:
+    if not fulltext_client.enabled:
+        return planned_candidates
+
+    return [
+        _prepare_translation_candidate_source(planned_candidate, fulltext_client)
+        for planned_candidate in planned_candidates
+    ]
+
+
+def _prepare_translation_candidate_source(
+    planned_candidate: PlannedCandidate,
+    fulltext_client: MercuryFulltextClient,
+) -> PlannedCandidate:
+    if planned_candidate.plan.action != "translate":
+        return planned_candidate
+
+    article_url = planned_candidate.candidate.link.strip()
+    if not article_url:
+        logger.debug(
+            "entry=%s has no article link; skipping mercury_fulltext fetch",
+            planned_candidate.candidate.entry_id,
+        )
+        return planned_candidate
+
+    try:
+        source_content = fulltext_client.fetch_content(article_url)
+    except Exception as exc:
+        logger.warning(
+            "entry=%s mercury_fulltext fetch failed; falling back to feed content: %s",
+            planned_candidate.candidate.entry_id,
+            exc,
+        )
+        return planned_candidate
+
+    if source_content is None:
+        logger.info(
+            "entry=%s mercury_fulltext returned no content; falling back to feed content",
+            planned_candidate.candidate.entry_id,
+        )
+        return planned_candidate
+
+    if source_content == planned_candidate.plan.source_content:
+        logger.debug(
+            "entry=%s mercury_fulltext content matched existing source content",
+            planned_candidate.candidate.entry_id,
+        )
+        return planned_candidate
+
+    logger.info(
+        "entry=%s using mercury_fulltext content before translation",
+        planned_candidate.candidate.entry_id,
+    )
+    return PlannedCandidate(
+        candidate=planned_candidate.candidate,
+        plan=replace(
+            planned_candidate.plan,
+            source_content=source_content,
+            source_hash=compute_source_hash(planned_candidate.plan.source_title, source_content),
+        ),
+    )
 
 
 def _translate_planned_candidates_in_batch(

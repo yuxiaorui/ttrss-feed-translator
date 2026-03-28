@@ -5,6 +5,7 @@
 - 直接连 PostgreSQL 读新文章
 - `title` 按纯文本翻译
 - `content` 先解析 HTML，只翻译文本节点，再回写原结构
+- 可选在翻译前调用 `mercury_fulltext` 兼容接口抓取全文，失败时自动回退 RSS 正文
 - 可选启用 AI 补标签：当上游 tag 太少时，额外生成并追加 item tag
 - 用独立追踪表记录原文快照、译文快照、原文 hash、翻译时间
 - 支持按 `owner_uid`、`feed_id`、`lang`、最近入库时间过滤
@@ -133,6 +134,15 @@ TRANSLATOR_TAGGING_REQUEST_TIMEOUT_SECONDS=120
 
 这些 `TRANSLATOR_TAGGING_*` 变量默认留空即可；留空时会自动复用翻译那套接口地址、key、模型和超时。
 
+如果你已经有可用的 `mercury_fulltext` / `mercury-parser-api` 服务，也可以让脚本在翻译前先尝试抓全文：
+
+```env
+TRANSLATOR_MERCURY_FULLTEXT_API_BASE_URL=http://mercury-parser:3000
+TRANSLATOR_MERCURY_FULLTEXT_REQUEST_TIMEOUT_SECONDS=30
+```
+
+这两个变量默认留空；留空时不会请求全文接口。
+
 然后执行：
 
 ```bash
@@ -169,6 +179,8 @@ docker compose -f docker-compose.example.yml logs -f translator
 | `TRANSLATOR_API_KEY` | 无 | API key |
 | `TRANSLATOR_MODEL` | 无 | 模型名 |
 | `TRANSLATOR_REQUEST_TIMEOUT_SECONDS` | `120` | 接口超时 |
+| `TRANSLATOR_MERCURY_FULLTEXT_API_BASE_URL` | 空 | 可选的 `mercury_fulltext` 兼容接口地址；配置后会在翻译前请求 `/parser?url=...` 抓全文 |
+| `TRANSLATOR_MERCURY_FULLTEXT_REQUEST_TIMEOUT_SECONDS` | `30` | 全文接口超时 |
 | `TRANSLATOR_TAGGING_API_BASE_URL` | `TRANSLATOR_API_BASE_URL` | AI 补标签单独使用的 OpenAI-compatible 接口地址 |
 | `TRANSLATOR_TAGGING_API_KEY` | `TRANSLATOR_API_KEY` | AI 补标签单独使用的 API key |
 | `TRANSLATOR_TAGGING_MODEL` | `TRANSLATOR_MODEL` | AI 补标签单独使用的模型名 |
@@ -189,6 +201,9 @@ docker compose -f docker-compose.example.yml logs -f translator
 
 ### 正文
 
+- 如果配置了 `TRANSLATOR_MERCURY_FULLTEXT_API_BASE_URL`，会先按文章 `link` 调一次全文接口
+- 全文接口返回可用 `content` 时，翻译和 AI tag 都会基于抓到的全文
+- 全文接口报错、超时、无 `content` 或文章没有 `link` 时，会自动回退到 RSS 里的原始 `content`
 - 用 BeautifulSoup 解析 HTML
 - 只提取文本节点翻译
 - `script/style/noscript/code/pre/textarea/svg/math` 默认跳过
@@ -243,4 +258,4 @@ docker compose -f docker-compose.example.yml logs -f translator
 - `ttrss_user_entries`
 - `ttrss_feeds`
 
-查询策略是用 `ttrss_user_entries.owner_uid + feed_id` 限定目标文章，再回写对应的 `ttrss_entries`。
+查询策略是用 `ttrss_user_entries.owner_uid + feed_id` 限定目标文章，再回写对应的 `ttrss_entries`；如果启用了全文抓取，还会读取 `ttrss_entries.link` 去请求 `mercury_fulltext` 接口。

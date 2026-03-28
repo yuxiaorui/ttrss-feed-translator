@@ -63,6 +63,7 @@ def _make_candidate(title: str, content: str, translation: TranslationRecord | N
         user_entry_id=101,
         feed_id=10,
         feed_title="Example Feed",
+        link="https://example.com/articles/1",
         title=title,
         content=content,
         current_tags=("ai",),

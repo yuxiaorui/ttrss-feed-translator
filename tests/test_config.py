@@ -38,6 +38,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.tagging_api_key, config.api_key)
         self.assertEqual(config.tagging_model, config.model)
         self.assertEqual(config.tagging_request_timeout_seconds, config.request_timeout_seconds)
+        self.assertEqual(config.mercury_fulltext_api_base_url, "")
+        self.assertEqual(config.mercury_fulltext_request_timeout_seconds, 30)
 
     def test_tagging_backend_can_override_translation_backend(self) -> None:
         env = _base_env()
@@ -53,6 +55,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.tagging_api_key, "ollama")
         self.assertEqual(config.tagging_model, "qwen3:8b")
         self.assertEqual(config.tagging_request_timeout_seconds, 45)
+
+    def test_mercury_fulltext_can_be_enabled(self) -> None:
+        env = _base_env()
+        env["TRANSLATOR_MERCURY_FULLTEXT_API_BASE_URL"] = "http://mercury-parser:3000"
+        env["TRANSLATOR_MERCURY_FULLTEXT_REQUEST_TIMEOUT_SECONDS"] = "15"
+
+        with patch.dict(os.environ, env, clear=True):
+            config = AppConfig.from_env()
+
+        self.assertEqual(config.mercury_fulltext_api_base_url, "http://mercury-parser:3000")
+        self.assertEqual(config.mercury_fulltext_request_timeout_seconds, 15)
 
 
 def _base_env() -> dict[str, str]:
