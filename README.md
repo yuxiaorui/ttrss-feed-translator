@@ -112,6 +112,26 @@ docker compose -f docker-compose.example.yml up -d translator
 docker compose -f docker-compose.example.yml logs -f translator
 ```
 
+如果你想在 compose 里顺手起一个本地 `Ollama`，并用 CPU 跑 `HY-MT1.5-1.8B`，可以把 `translator.env` 里的这几个值改成：
+
+```env
+TRANSLATOR_API_BASE_URL=http://ollama:11434/v1
+TRANSLATOR_API_KEY=ollama
+TRANSLATOR_MODEL=MedAIBase/Tencent-HY-MT1.5:1.8b
+```
+
+然后执行：
+
+```bash
+cp translator.env.example translator.env
+docker compose -f docker-compose.example.yml --profile ollama up -d ollama
+docker compose -f docker-compose.example.yml --profile ollama up ollama-pull-hy-mt-1-8b
+docker compose -f docker-compose.example.yml up -d translator
+docker compose -f docker-compose.example.yml logs -f translator
+```
+
+这里的 `ollama` service 使用官方 `ollama/ollama` 镜像，不挂 GPU 设备，所以就是 CPU 运行。`ollama-pull-hy-mt-1-8b` 是一次性初始化服务，用来把模型拉到名为 `ollama` 的持久卷里。
+
 如果你已经有自己的 TT-RSS compose，只需要把 `translator` 这个 service 抄进去，并保证：
 
 - 它能访问 PostgreSQL

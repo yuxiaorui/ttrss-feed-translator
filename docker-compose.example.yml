@@ -5,3 +5,25 @@ services:
     restart: unless-stopped
     env_file:
       - ./translator.env
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+      - ./models:/models
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  ollama:
+
+# ollama create HY-MT1.5-1.8B -f /models/Modelfile
