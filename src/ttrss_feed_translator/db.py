@@ -71,7 +71,14 @@ def ensure_schema(conn: psycopg.Connection) -> None:
         cur.execute(TRACKING_TABLE_MIGRATIONS_SQL)
 
 
-def fetch_candidates(conn: psycopg.Connection, config: AppConfig) -> list[EntryCandidate]:
+def fetch_candidates(
+    conn: psycopg.Connection,
+    config: AppConfig,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[EntryCandidate]:
+    effective_limit = config.batch_size if limit is None else limit
     where_clauses = [
         "ue.owner_uid = %s",
         "e.date_entered >= now() - make_interval(hours => %s)",
@@ -128,10 +135,11 @@ def fetch_candidates(conn: psycopg.Connection, config: AppConfig) -> list[EntryC
             where {where_sql}
             order by e.id, e.date_entered desc
         ) candidates
-        order by date_entered desc
+        order by date_entered desc, entry_id desc
         limit %s
+        offset %s
     """
-    params.append(config.batch_size)
+    params.extend([effective_limit, offset])
 
     with conn.cursor() as cur:
         cur.execute(query, params)

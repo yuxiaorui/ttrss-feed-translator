@@ -7,6 +7,7 @@ from unittest.mock import patch
 from ttrss_feed_translator.app import (
     PlannedCandidate,
     RunStats,
+    _collect_translation_queue,
     _process_translation_batch,
     _translate_planned_candidates_in_batch,
 )
@@ -76,6 +77,73 @@ class FakeTranslator:
 
 
 class AppBatchTests(unittest.TestCase):
+    def test_collect_translation_queue_paginates_until_batch_is_full(self) -> None:
+        translator = FakeTranslator()
+        conn = FakeConn()
+        stats = RunStats()
+        config = _make_config(batch_size=2)
+        first_page = [
+            _make_planned_candidate(1, "First title", "<p>First body</p>").candidate,
+            _make_planned_candidate(2, "Second title", "<div>Second body</div>").candidate,
+        ]
+        second_page = [
+            _make_planned_candidate(3, "First title", "<p>First body</p>").candidate,
+            _make_planned_candidate(4, "Second title", "<div>Second body</div>").candidate,
+        ]
+        plans = {
+            1: ProcessingPlan(
+                action="skip",
+                reason="already-translated",
+                source_title="First title",
+                source_content="<p>First body</p>",
+                source_hash="hash-1",
+            ),
+            2: ProcessingPlan(
+                action="reapply",
+                reason="same-source-hash-found-in-db",
+                source_title="Second title",
+                source_content="<div>Second body</div>",
+                source_hash="hash-2",
+            ),
+            3: ProcessingPlan(
+                action="translate",
+                reason="no-tracking-record",
+                source_title="First title",
+                source_content="<p>First body</p>",
+                source_hash="hash-3",
+            ),
+            4: ProcessingPlan(
+                action="translate",
+                reason="no-tracking-record",
+                source_title="Second title",
+                source_content="<div>Second body</div>",
+                source_hash="hash-4",
+            ),
+        }
+
+        with patch("ttrss_feed_translator.app.fetch_candidates") as fetch_candidates_mock:
+            with patch("ttrss_feed_translator.app._plan_candidate") as plan_candidate_mock:
+                with patch("ttrss_feed_translator.app._process_candidate_safely") as process_candidate_mock:
+                    fetch_candidates_mock.side_effect = [first_page, second_page]
+                    plan_candidate_mock.side_effect = (
+                        lambda candidate, _: PlannedCandidate(candidate=candidate, plan=plans[candidate.entry_id])
+                    )
+
+                    translation_queue = _collect_translation_queue(conn, config, translator, stats)
+
+        self.assertEqual(
+            fetch_candidates_mock.call_args_list,
+            [
+                unittest.mock.call(conn, config, limit=2, offset=0),
+                unittest.mock.call(conn, config, limit=2, offset=2),
+            ],
+        )
+        self.assertEqual([item.candidate.entry_id for item in translation_queue], [3, 4])
+        self.assertEqual(
+            [call.args[1].candidate.entry_id for call in process_candidate_mock.call_args_list],
+            [1, 2],
+        )
+
     def test_translate_candidates_are_batched_across_articles(self) -> None:
         translator = FakeTranslator()
 
@@ -256,7 +324,7 @@ def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedC
     return PlannedCandidate(candidate=candidate, plan=plan)
 
 
-def _make_config(*, ai_tagging_enabled: bool = False) -> AppConfig:
+def _make_config(*, ai_tagging_enabled: bool = False, batch_size: int = 10) -> AppConfig:
     return AppConfig(
         database_url="postgresql://postgres:password@db:5432/postgres",
         owner_uid=1,
@@ -264,7 +332,7 @@ def _make_config(*, ai_tagging_enabled: bool = False) -> AppConfig:
         source_langs=("en",),
         feed_ids=(61,),
         lookback_hours=48,
-        batch_size=10,
+        batch_size=batch_size,
         loop_interval_seconds=300,
         require_single_owner=True,
         dry_run=False,

@@ -65,7 +65,7 @@ cp translator.env.example translator.env
 - 只处理 `owner_uid=1`
 - 只处理你白名单里的 `feed_id`
 - 只扫最近 `48` 小时入库文章
-- 每轮最多处理 `10` 篇
+- 每轮最多翻译 `10` 篇；如果前面的候选只是 skip/reapply，会继续往后扫描
 - 遇到多用户共享文章时跳过
 
 推荐做法：
@@ -128,7 +128,7 @@ docker compose -f docker-compose.example.yml logs -f translator
 | `TRANSLATOR_FEED_IDS` | 无 | feed 白名单，至少填一个；只处理这些指定 feed id |
 | `TRANSLATOR_SOURCE_LANGS` | 空 | 可选附加过滤：只处理这些源语言，逗号分隔；默认不依赖 `ttrss_entries.lang` |
 | `TRANSLATOR_LOOKBACK_HOURS` | `48` | 只扫最近入库文章 |
-| `TRANSLATOR_BATCH_SIZE` | `10` | 每轮最多处理多少篇 |
+| `TRANSLATOR_BATCH_SIZE` | `10` | 每轮最多翻译多少篇；如果前面的候选被 skip/reapply，会继续翻页找够可翻译条目 |
 | `TRANSLATOR_LOOP_INTERVAL_SECONDS` | `300` | sidecar 每轮间隔秒数 |
 | `TRANSLATOR_REQUIRE_SINGLE_OWNER` | `true` | 如果文章被多个 owner 共享则跳过 |
 | `TRANSLATOR_DRY_RUN` | `false` | 只打印动作，不写库 |

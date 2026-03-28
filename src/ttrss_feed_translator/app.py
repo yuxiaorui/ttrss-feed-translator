@@ -69,18 +69,7 @@ def run_once(config: AppConfig) -> RunStats:
         ensure_schema(conn)
         conn.commit()
 
-        candidates = fetch_candidates(conn, config)
-        logger.info("fetched %s candidate articles", len(candidates))
-
-        translation_queue: list[PlannedCandidate] = []
-        for candidate in candidates:
-            planned_candidate = _plan_candidate(candidate, config)
-            if planned_candidate.plan.action == "translate":
-                translation_queue.append(planned_candidate)
-                continue
-
-            _process_candidate_safely(conn, planned_candidate, config, translator, stats)
-
+        translation_queue = _collect_translation_queue(conn, config, translator, stats)
         _process_translation_batch(conn, translation_queue, config, translator, stats)
 
     logger.info(
@@ -92,6 +81,51 @@ def run_once(config: AppConfig) -> RunStats:
         stats.tagged,
     )
     return stats
+
+
+def _collect_translation_queue(
+    conn,
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+    stats: RunStats,
+) -> list[PlannedCandidate]:
+    translation_queue: list[PlannedCandidate] = []
+    inspected_candidates = 0
+    offset = 0
+    page_size = config.batch_size
+
+    while len(translation_queue) < config.batch_size:
+        candidates = fetch_candidates(conn, config, limit=page_size, offset=offset)
+        if not candidates:
+            break
+
+        logger.info(
+            "fetched %s candidate articles at offset=%s while collecting translation queue",
+            len(candidates),
+            offset,
+        )
+        offset += len(candidates)
+
+        for candidate in candidates:
+            inspected_candidates += 1
+            planned_candidate = _plan_candidate(candidate, config)
+            if planned_candidate.plan.action == "translate":
+                translation_queue.append(planned_candidate)
+                if len(translation_queue) >= config.batch_size:
+                    break
+                continue
+
+            _process_candidate_safely(conn, planned_candidate, config, translator, stats)
+
+        if len(candidates) < page_size:
+            break
+
+    logger.info(
+        "collected %s translation candidates after inspecting %s candidate articles",
+        len(translation_queue),
+        inspected_candidates,
+    )
+    return translation_queue
 
 
 def _plan_candidate(candidate: EntryCandidate, config: AppConfig) -> PlannedCandidate:
