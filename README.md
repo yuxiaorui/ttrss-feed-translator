@@ -161,6 +161,7 @@ docker compose -f docker-compose.example.yml logs -f translator
 ### AI 补标签
 
 - 默认关闭，开启 `TRANSLATOR_ENABLE_AI_TAGGING=true` 后才会执行
+- 新翻译的多篇短文章会尽量合并到同一轮 AI tag 请求
 - 只会在当前文章 tag 数量少于 `TRANSLATOR_AI_TAGGING_MAX_TAGS` 时触发
 - 会保留上游已有 tag，只追加新的唯一 tag，不覆盖原 tag
 - AI 生成的 tag 会写入 `ttrss_tags` 和 `ttrss_user_entries.tag_cache`

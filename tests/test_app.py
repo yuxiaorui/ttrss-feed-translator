@@ -27,9 +27,16 @@ class FakeConn:
 
 
 class FakeTranslator:
-    def __init__(self, fail_when_payload_exceeds: int | None = None) -> None:
+    def __init__(
+        self,
+        fail_when_payload_exceeds: int | None = None,
+        fail_tag_batch_when_request_count_exceeds: int | None = None,
+    ) -> None:
         self.calls: list[list[str]] = []
+        self.tag_batch_calls: list[list[str]] = []
+        self.tag_calls: list[str] = []
         self.fail_when_payload_exceeds = fail_when_payload_exceeds
+        self.fail_tag_batch_when_request_count_exceeds = fail_tag_batch_when_request_count_exceeds
 
     def translate_texts(self, texts: list[str]) -> list[str]:
         self.calls.append(list(texts))
@@ -44,8 +51,28 @@ class FakeTranslator:
         }
         return [mapping[text] for text in texts]
 
-    def generate_tags(self, **_: object) -> list[str]:
-        return []
+    def generate_tags_batch(self, requests: list[object]) -> list[list[str]]:
+        titles = [request.title for request in requests]
+        self.tag_batch_calls.append(titles)
+        if (
+            self.fail_tag_batch_when_request_count_exceeds is not None
+            and len(requests) > self.fail_tag_batch_when_request_count_exceeds
+        ):
+            raise RuntimeError("tag batch too large for fake translator")
+
+        return [self._tag_mapping(request.title) for request in requests]
+
+    def generate_tags(self, **kwargs: object) -> list[str]:
+        title = str(kwargs["title"])
+        self.tag_calls.append(title)
+        return self._tag_mapping(title)
+
+    def _tag_mapping(self, title: str) -> list[str]:
+        mapping = {
+            "First title": ["AI", "Startups"],
+            "Second title": ["Robotics"],
+        }
+        return mapping[title]
 
 
 class AppBatchTests(unittest.TestCase):
@@ -122,6 +149,87 @@ class AppBatchTests(unittest.TestCase):
         self.assertEqual(conn.rollbacks, 0)
         record_error_mock.assert_not_called()
 
+    def test_ai_tags_are_batched_across_articles(self) -> None:
+        translator = FakeTranslator()
+        conn = FakeConn()
+        stats = RunStats()
+        saved_entries: list[tuple[int, tuple[str, ...]]] = []
+
+        with patch("ttrss_feed_translator.app.save_translation") as save_translation_mock:
+            save_translation_mock.side_effect = (
+                lambda *args, **kwargs: saved_entries.append(
+                    (
+                        kwargs["candidate"].entry_id,
+                        kwargs["generated_tags"],
+                    )
+                )
+            )
+
+            _process_translation_batch(
+                conn,
+                [
+                    _make_planned_candidate(1, "First title", "<p>First body</p>"),
+                    _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
+                ],
+                _make_config(ai_tagging_enabled=True),
+                translator,
+                stats,
+            )
+
+        self.assertEqual(translator.calls, [["First title", "First body", "Second title", "Second body"]])
+        self.assertEqual(translator.tag_batch_calls, [["First title", "Second title"]])
+        self.assertEqual(translator.tag_calls, [])
+        self.assertEqual(
+            saved_entries,
+            [
+                (1, ("AI", "Startups")),
+                (2, ("Robotics",)),
+            ],
+        )
+        self.assertEqual(stats.translated, 2)
+        self.assertEqual(stats.tagged, 2)
+
+    def test_ai_tag_batch_failure_falls_back_to_per_article_generation(self) -> None:
+        translator = FakeTranslator(fail_tag_batch_when_request_count_exceeds=1)
+        conn = FakeConn()
+        stats = RunStats()
+        saved_entries: list[tuple[int, tuple[str, ...]]] = []
+
+        with patch("ttrss_feed_translator.app.save_translation") as save_translation_mock:
+            with patch("ttrss_feed_translator.app.record_error") as record_error_mock:
+                save_translation_mock.side_effect = (
+                    lambda *args, **kwargs: saved_entries.append(
+                        (
+                            kwargs["candidate"].entry_id,
+                            kwargs["generated_tags"],
+                        )
+                    )
+                )
+
+                _process_translation_batch(
+                    conn,
+                    [
+                        _make_planned_candidate(1, "First title", "<p>First body</p>"),
+                        _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
+                    ],
+                    _make_config(ai_tagging_enabled=True),
+                    translator,
+                    stats,
+                )
+
+        self.assertEqual(translator.tag_batch_calls, [["First title", "Second title"]])
+        self.assertEqual(translator.tag_calls, ["First title", "Second title"])
+        self.assertEqual(
+            saved_entries,
+            [
+                (1, ("AI", "Startups")),
+                (2, ("Robotics",)),
+            ],
+        )
+        self.assertEqual(stats.translated, 2)
+        self.assertEqual(stats.failed, 0)
+        record_error_mock.assert_not_called()
+
 
 def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedCandidate:
     candidate = EntryCandidate(
@@ -148,7 +256,7 @@ def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedC
     return PlannedCandidate(candidate=candidate, plan=plan)
 
 
-def _make_config() -> AppConfig:
+def _make_config(*, ai_tagging_enabled: bool = False) -> AppConfig:
     return AppConfig(
         database_url="postgresql://postgres:password@db:5432/postgres",
         owner_uid=1,
@@ -166,7 +274,7 @@ def _make_config() -> AppConfig:
         request_timeout_seconds=120,
         max_texts_per_request=40,
         max_chars_per_request=8000,
-        ai_tagging_enabled=False,
+        ai_tagging_enabled=ai_tagging_enabled,
         ai_tagging_max_tags=6,
         ai_tagging_language="zh-CN",
         log_level="INFO",

@@ -19,7 +19,7 @@ from ttrss_feed_translator.html_translate import (
 )
 from ttrss_feed_translator.models import EntryCandidate, ProcessingPlan
 from ttrss_feed_translator.tags import merge_tags
-from ttrss_feed_translator.translator import OpenAICompatibleTranslator
+from ttrss_feed_translator.translator import OpenAICompatibleTranslator, TagGenerationRequest
 from ttrss_feed_translator.workflow import plan_entry
 
 
@@ -113,6 +113,7 @@ def _process_candidate_safely(
     translator: OpenAICompatibleTranslator,
     stats: RunStats,
     translated_entry: tuple[str, str] | None = None,
+    generated_tags: tuple[str, ...] | None = None,
 ) -> None:
     try:
         _process_candidate(
@@ -122,6 +123,7 @@ def _process_candidate_safely(
             translator,
             stats,
             translated_entry=translated_entry,
+            generated_tags=generated_tags,
         )
         conn.commit()
     except Exception as exc:
@@ -154,9 +156,12 @@ def _process_translation_batch(
             _process_candidate_safely(conn, planned_candidate, config, translator, stats)
         return
 
-    for planned_candidate, translated_entry in zip(
+    generated_tags_by_entry = _generate_ai_tags_in_batch(planned_candidates, config, translator)
+
+    for planned_candidate, translated_entry, generated_tags in zip(
         planned_candidates,
         translated_entries,
+        generated_tags_by_entry,
         strict=True,
     ):
         _process_candidate_safely(
@@ -166,6 +171,7 @@ def _process_translation_batch(
             translator,
             stats,
             translated_entry=translated_entry,
+            generated_tags=generated_tags,
         )
 
 
@@ -208,6 +214,7 @@ def _process_candidate(
     translator: OpenAICompatibleTranslator,
     stats: RunStats,
     translated_entry: tuple[str, str] | None = None,
+    generated_tags: tuple[str, ...] | None = None,
 ) -> None:
     candidate = planned_candidate.candidate
     plan = planned_candidate.plan
@@ -247,7 +254,14 @@ def _process_candidate(
     else:
         translated_title, translated_content = translated_entry
 
-    generated_tags = _generate_ai_tags(candidate, plan.source_title, plan.source_content, config, translator)
+    if generated_tags is None:
+        generated_tags = _generate_ai_tags(
+            candidate,
+            plan.source_title,
+            plan.source_content,
+            config,
+            translator,
+        )
 
     if config.dry_run:
         logger.info(
@@ -281,21 +295,94 @@ def _generate_ai_tags(
     config: AppConfig,
     translator: OpenAICompatibleTranslator,
 ) -> tuple[str, ...]:
-    if not config.ai_tagging_enabled:
-        return ()
-    if candidate.owner_count > 1 and config.require_single_owner:
-        return ()
-    if len(candidate.current_tags) >= config.ai_tagging_max_tags:
+    request = _build_tag_generation_request(candidate, source_title, source_content, config)
+    if request is None:
         return ()
 
     generated = translator.generate_tags(
+        title=request.title,
+        content=request.content,
+        existing_tags=request.existing_tags,
+        max_total_tags=request.max_total_tags,
+        language=request.language,
+    )
+    return tuple(generated)
+
+
+def _generate_ai_tags_in_batch(
+    planned_candidates: list[PlannedCandidate],
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+) -> list[tuple[str, ...]]:
+    generated_tags_by_entry: list[tuple[str, ...]] = [()] * len(planned_candidates)
+    requests: list[TagGenerationRequest] = []
+    request_indexes: list[int] = []
+
+    for index, planned_candidate in enumerate(planned_candidates):
+        request = _build_tag_generation_request(
+            planned_candidate.candidate,
+            planned_candidate.plan.source_title,
+            planned_candidate.plan.source_content,
+            config,
+        )
+        if request is None:
+            continue
+
+        request_indexes.append(index)
+        requests.append(request)
+
+    if not requests:
+        return generated_tags_by_entry
+
+    try:
+        generated_batches = translator.generate_tags_batch(requests)
+    except Exception:
+        logger.warning(
+            "batch ai-tag generation failed for %s entries; falling back to per-entry tag generation",
+            len(requests),
+            exc_info=True,
+        )
+        for index, request in zip(request_indexes, requests, strict=True):
+            generated_tags_by_entry[index] = tuple(
+                translator.generate_tags(
+                    title=request.title,
+                    content=request.content,
+                    existing_tags=request.existing_tags,
+                    max_total_tags=request.max_total_tags,
+                    language=request.language,
+                )
+            )
+        return generated_tags_by_entry
+
+    if len(generated_batches) != len(requests):
+        raise ValueError("translator returned a different number of ai-tag result sets")
+
+    for index, generated in zip(request_indexes, generated_batches, strict=True):
+        generated_tags_by_entry[index] = tuple(generated)
+
+    return generated_tags_by_entry
+
+
+def _build_tag_generation_request(
+    candidate: EntryCandidate,
+    source_title: str,
+    source_content: str,
+    config: AppConfig,
+) -> TagGenerationRequest | None:
+    if not config.ai_tagging_enabled:
+        return None
+    if candidate.owner_count > 1 and config.require_single_owner:
+        return None
+    if len(candidate.current_tags) >= config.ai_tagging_max_tags:
+        return None
+
+    return TagGenerationRequest(
         title=source_title,
         content=source_content,
         existing_tags=candidate.current_tags,
         max_total_tags=config.ai_tagging_max_tags,
         language=config.ai_tagging_language,
     )
-    return tuple(generated)
 
 
 def _plan_tag_sync(
