@@ -91,12 +91,7 @@ class OpenAICompatibleTranslator:
             prepared_requests.append(prepared)
 
         for chunk in self._chunk_tag_generation_requests(prepared_requests):
-            generated_chunk = self._generate_tags_chunk(chunk)
-            if len(generated_chunk) != len(chunk):
-                raise TranslationError(
-                    f"translator returned {len(generated_chunk)} tag sets for {len(chunk)} requests"
-                )
-
+            generated_chunk = self._generate_tags_chunk_with_retries(chunk)
             for prepared, generated in zip(chunk, generated_chunk, strict=True):
                 results[prepared.index] = _normalize_generated_tags(
                     generated,
@@ -171,7 +166,7 @@ class OpenAICompatibleTranslator:
         return parsed
 
     def _generate_tags_chunk(self, requests: list["_PreparedTagGenerationRequest"]) -> list[list[str]]:
-        parsed = self._request_string_matrix(
+        parsed = self._request_tag_results(
             [
                 {
                     "role": "system",
@@ -179,8 +174,10 @@ class OpenAICompatibleTranslator:
                         "You are an RSS tagging engine. "
                         "For each input object, generate up to that object's max_new_tags additional article tags "
                         "in that object's tag_language. "
-                        "Return JSON only. The output must be a JSON array where each item is a JSON array of "
-                        "strings. The outer array must have exactly the same length and order as the input array. "
+                        "Return JSON only. The output must be a JSON array of objects. "
+                        "Each object must contain request_id and tags fields. "
+                        "Every input request_id must appear exactly once in the output. "
+                        "tags must be a JSON array of strings. "
                         "Prefer concrete people, companies, products, places, technologies, and themes. "
                         "Avoid generic tags like news, latest, article, update, and analysis. "
                         "Avoid repeating any existing tags. Keep tags concise."
@@ -190,18 +187,42 @@ class OpenAICompatibleTranslator:
                     "role": "user",
                     "content": json.dumps([request.payload for request in requests], ensure_ascii=False),
                 },
-            ]
+            ],
+            requests,
         )
         logger.debug("generated ai tags for %s articles", len(requests))
         return parsed
+
+    def _generate_tags_chunk_with_retries(
+        self,
+        requests: list["_PreparedTagGenerationRequest"],
+    ) -> list[list[str]]:
+        try:
+            return self._generate_tags_chunk(requests)
+        except TranslationError:
+            if len(requests) <= 1:
+                raise
+
+            logger.warning(
+                "ai-tag chunk response was incomplete for %s requests; retrying in smaller chunks",
+                len(requests),
+            )
+            split_index = len(requests) // 2
+            return self._generate_tags_chunk_with_retries(
+                requests[:split_index]
+            ) + self._generate_tags_chunk_with_retries(requests[split_index:])
 
     def _request_string_array(self, messages: list[dict[str, str]]) -> list[str]:
         parsed = self._request_json(messages)
         return _parse_string_array_payload(parsed)
 
-    def _request_string_matrix(self, messages: list[dict[str, str]]) -> list[list[str]]:
+    def _request_tag_results(
+        self,
+        messages: list[dict[str, str]],
+        requests: list["_PreparedTagGenerationRequest"],
+    ) -> list[list[str]]:
         parsed = self._request_json(messages)
-        return _parse_string_matrix_payload(parsed)
+        return _parse_tag_generation_payload(parsed, [request.request_id for request in requests])
 
     def _request_json(self, messages: list[dict[str, str]]) -> object:
         url = f"{self._api_base_url}/chat/completions"
@@ -226,6 +247,7 @@ class OpenAICompatibleTranslator:
 @dataclass(frozen=True)
 class _PreparedTagGenerationRequest:
     index: int
+    request_id: str
     request: TagGenerationRequest
     payload: dict[str, object]
     payload_size: int
@@ -241,6 +263,7 @@ def _prepare_tag_generation_request(
         return None
 
     payload = {
+        "request_id": str(index),
         "title": request.title,
         "content_excerpt": extract_text_for_tagging(request.content, max_chars=TAGGING_SOURCE_TEXT_LIMIT),
         "existing_tags": list(request.existing_tags),
@@ -249,6 +272,7 @@ def _prepare_tag_generation_request(
     }
     return _PreparedTagGenerationRequest(
         index=index,
+        request_id=str(index),
         request=request,
         payload=payload,
         payload_size=len(json.dumps(payload, ensure_ascii=False)),
@@ -295,7 +319,10 @@ def _parse_string_array_payload(content: object) -> list[str]:
     return list(parsed)
 
 
-def _parse_string_matrix_payload(content: object) -> list[list[str]]:
+def _parse_tag_generation_payload(
+    content: object,
+    request_ids: list[str] | None = None,
+) -> list[list[str]]:
     parsed = content
     if isinstance(parsed, dict):
         for key in ("tags", "results", "items"):
@@ -303,9 +330,46 @@ def _parse_string_matrix_payload(content: object) -> list[list[str]]:
                 parsed = parsed[key]
                 break
 
-    if not isinstance(parsed, list) or not all(
-        isinstance(item, list) and all(isinstance(tag, str) for tag in item) for item in parsed
-    ):
-        raise TranslationError("tag generation response is not a JSON array of string arrays")
+    if not isinstance(parsed, list):
+        raise TranslationError("tag generation response is not a JSON array")
 
-    return [list(item) for item in parsed]
+    if all(isinstance(item, list) and all(isinstance(tag, str) for tag in item) for item in parsed):
+        if request_ids is not None and len(parsed) != len(request_ids):
+            raise TranslationError(
+                f"translator returned {len(parsed)} tag sets for {len(request_ids)} requests"
+            )
+        return [list(item) for item in parsed]
+
+    if not all(isinstance(item, dict) for item in parsed):
+        raise TranslationError("tag generation response is not a JSON array of tag results")
+
+    mapped: dict[str, list[str]] = {}
+    for item in parsed:
+        request_id = item.get("request_id", item.get("id"))
+        tags = item.get("tags")
+        if not isinstance(request_id, str | int):
+            raise TranslationError("tag generation result is missing request_id")
+        if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+            raise TranslationError("tag generation result tags must be a JSON string array")
+
+        request_id_key = str(request_id)
+        if request_id_key in mapped:
+            raise TranslationError(f"duplicate tag generation request_id: {request_id_key}")
+        mapped[request_id_key] = list(tags)
+
+    if request_ids is None:
+        return [mapped[key] for key in sorted(mapped)]
+
+    missing = [request_id for request_id in request_ids if request_id not in mapped]
+    if missing:
+        raise TranslationError(f"missing tag generation result ids: {', '.join(missing)}")
+
+    unexpected = [request_id for request_id in mapped if request_id not in set(request_ids)]
+    if unexpected:
+        raise TranslationError(f"unexpected tag generation result ids: {', '.join(unexpected)}")
+
+    return [mapped[request_id] for request_id in request_ids]
+
+
+def _parse_string_matrix_payload(content: object) -> list[list[str]]:
+    return _parse_tag_generation_payload(content)

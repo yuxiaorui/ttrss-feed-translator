@@ -7,6 +7,8 @@ from ttrss_feed_translator.config import AppConfig
 from ttrss_feed_translator.translator import (
     OpenAICompatibleTranslator,
     TagGenerationRequest,
+    TranslationError,
+    _parse_tag_generation_payload,
     _parse_string_matrix_payload,
 )
 
@@ -17,8 +19,13 @@ class TranslatorBatchTests(unittest.TestCase):
 
         with patch.object(
             translator,
-            "_request_string_matrix",
-            return_value=[["AI", "Startups", "OpenAI"], ["Robotics", "AI"]],
+            "_request_json",
+            return_value={
+                "results": [
+                    {"request_id": "0", "tags": ["AI", "Startups", "OpenAI"]},
+                    {"request_id": "1", "tags": ["Robotics", "AI"]},
+                ]
+            },
         ) as request_mock:
             generated = translator.generate_tags_batch(
                 [
@@ -41,6 +48,55 @@ class TranslatorBatchTests(unittest.TestCase):
 
         self.assertEqual(generated, [["AI", "Startups"], ["Robotics"]])
         request_mock.assert_called_once()
+
+    def test_generate_tags_batch_retries_smaller_chunks_on_incomplete_result(self) -> None:
+        translator = OpenAICompatibleTranslator(_make_config())
+        calls: list[list[str]] = []
+
+        def fake_generate(chunk):
+            request_ids = [request.request_id for request in chunk]
+            calls.append(request_ids)
+            if len(chunk) == 2:
+                raise TranslationError("translator returned 1 tag sets for 2 requests")
+            if chunk[0].request_id == "0":
+                return [["AI"]]
+            return [["Robotics"]]
+
+        with patch.object(translator, "_generate_tags_chunk", side_effect=fake_generate):
+            generated = translator.generate_tags_batch(
+                [
+                    TagGenerationRequest(
+                        title="First",
+                        content="<p>First body</p>",
+                        existing_tags=(),
+                        max_total_tags=3,
+                        language="zh-CN",
+                    ),
+                    TagGenerationRequest(
+                        title="Second",
+                        content="<p>Second body</p>",
+                        existing_tags=(),
+                        max_total_tags=3,
+                        language="zh-CN",
+                    ),
+                ]
+            )
+
+        self.assertEqual(generated, [["AI"], ["Robotics"]])
+        self.assertEqual(calls, [["0", "1"], ["0"], ["1"]])
+
+    def test_parse_tag_generation_payload_accepts_request_id_objects(self) -> None:
+        parsed = _parse_tag_generation_payload(
+            {
+                "results": [
+                    {"request_id": "b", "tags": ["Robotics", "Startups"]},
+                    {"request_id": "a", "tags": ["AI"]},
+                ]
+            },
+            ["a", "b"],
+        )
+
+        self.assertEqual(parsed, [["AI"], ["Robotics", "Startups"]])
 
     def test_parse_string_matrix_payload_accepts_tags_key(self) -> None:
         parsed = _parse_string_matrix_payload({"tags": [["AI"], ["Robotics", "Startups"]]})
