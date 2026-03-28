@@ -51,7 +51,8 @@ class PlannedCandidate:
 
 def run_once(config: AppConfig) -> RunStats:
     stats = RunStats()
-    translator = OpenAICompatibleTranslator(config)
+    translation_translator = OpenAICompatibleTranslator(config)
+    tagging_translator = OpenAICompatibleTranslator.for_tagging(config)
 
     source_langs = ",".join(config.source_langs) if config.source_langs else "<disabled>"
     feed_ids = ",".join(str(feed_id) for feed_id in config.feed_ids)
@@ -69,8 +70,21 @@ def run_once(config: AppConfig) -> RunStats:
         ensure_schema(conn)
         conn.commit()
 
-        translation_queue = _collect_translation_queue(conn, config, translator, stats)
-        _process_translation_batch(conn, translation_queue, config, translator, stats)
+        translation_queue = _collect_translation_queue(
+            conn,
+            config,
+            translation_translator,
+            tagging_translator,
+            stats,
+        )
+        _process_translation_batch(
+            conn,
+            translation_queue,
+            config,
+            translation_translator,
+            tagging_translator,
+            stats,
+        )
 
     logger.info(
         "finished run: translated=%s reapplied=%s skipped=%s failed=%s tagged=%s",
@@ -86,7 +100,8 @@ def run_once(config: AppConfig) -> RunStats:
 def _collect_translation_queue(
     conn,
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    translation_translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
     stats: RunStats,
 ) -> list[PlannedCandidate]:
     translation_queue: list[PlannedCandidate] = []
@@ -115,7 +130,14 @@ def _collect_translation_queue(
                     break
                 continue
 
-            _process_candidate_safely(conn, planned_candidate, config, translator, stats)
+            _process_candidate_safely(
+                conn,
+                planned_candidate,
+                config,
+                translation_translator,
+                tagging_translator,
+                stats,
+            )
 
         if len(candidates) < page_size:
             break
@@ -144,7 +166,8 @@ def _process_candidate_safely(
     conn,
     planned_candidate: PlannedCandidate,
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    translation_translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
     stats: RunStats,
     translated_entry: tuple[str, str] | None = None,
     generated_tags: tuple[str, ...] | None = None,
@@ -154,7 +177,8 @@ def _process_candidate_safely(
             conn,
             planned_candidate,
             config,
-            translator,
+            translation_translator,
+            tagging_translator,
             stats,
             translated_entry=translated_entry,
             generated_tags=generated_tags,
@@ -172,14 +196,18 @@ def _process_translation_batch(
     conn,
     planned_candidates: list[PlannedCandidate],
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    translation_translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
     stats: RunStats,
 ) -> None:
     if not planned_candidates:
         return
 
     try:
-        translated_entries = _translate_planned_candidates_in_batch(planned_candidates, translator)
+        translated_entries = _translate_planned_candidates_in_batch(
+            planned_candidates,
+            translation_translator,
+        )
     except Exception:
         logger.warning(
             "batch translation failed for %s entries; falling back to per-entry translation",
@@ -187,10 +215,21 @@ def _process_translation_batch(
             exc_info=True,
         )
         for planned_candidate in planned_candidates:
-            _process_candidate_safely(conn, planned_candidate, config, translator, stats)
+            _process_candidate_safely(
+                conn,
+                planned_candidate,
+                config,
+                translation_translator,
+                tagging_translator,
+                stats,
+            )
         return
 
-    generated_tags_by_entry = _generate_ai_tags_in_batch(planned_candidates, config, translator)
+    generated_tags_by_entry = _generate_ai_tags_in_batch(
+        planned_candidates,
+        config,
+        tagging_translator,
+    )
 
     for planned_candidate, translated_entry, generated_tags in zip(
         planned_candidates,
@@ -202,7 +241,8 @@ def _process_translation_batch(
             conn,
             planned_candidate,
             config,
-            translator,
+            translation_translator,
+            tagging_translator,
             stats,
             translated_entry=translated_entry,
             generated_tags=generated_tags,
@@ -245,7 +285,8 @@ def _process_candidate(
     conn,
     planned_candidate: PlannedCandidate,
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    translation_translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
     stats: RunStats,
     translated_entry: tuple[str, str] | None = None,
     generated_tags: tuple[str, ...] | None = None,
@@ -254,13 +295,13 @@ def _process_candidate(
     plan = planned_candidate.plan
 
     if plan.action == "skip":
-        tag_plan = _plan_tag_sync(candidate, plan, config, translator)
+        tag_plan = _plan_tag_sync(candidate, plan, config, tagging_translator)
         _apply_tag_plan(conn, candidate, config, tag_plan, stats)
         stats.skipped += 1
         return
 
     if plan.action == "reapply":
-        tag_plan = _plan_tag_sync(candidate, plan, config, translator)
+        tag_plan = _plan_tag_sync(candidate, plan, config, tagging_translator)
         if config.dry_run:
             logger.info(
                 "dry-run: would reapply cached translation for entry %s%s",
@@ -283,7 +324,7 @@ def _process_candidate(
         translated_title, translated_content = translate_title_and_html(
             plan.source_title,
             plan.source_content,
-            translator,
+            translation_translator,
         )
     else:
         translated_title, translated_content = translated_entry
@@ -294,7 +335,7 @@ def _process_candidate(
             plan.source_title,
             plan.source_content,
             config,
-            translator,
+            tagging_translator,
         )
 
     if config.dry_run:
@@ -327,13 +368,13 @@ def _generate_ai_tags(
     source_title: str,
     source_content: str,
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
 ) -> tuple[str, ...]:
     request = _build_tag_generation_request(candidate, source_title, source_content, config)
     if request is None:
         return ()
 
-    generated = translator.generate_tags(
+    generated = tagging_translator.generate_tags(
         title=request.title,
         content=request.content,
         existing_tags=request.existing_tags,
@@ -346,7 +387,7 @@ def _generate_ai_tags(
 def _generate_ai_tags_in_batch(
     planned_candidates: list[PlannedCandidate],
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
 ) -> list[tuple[str, ...]]:
     generated_tags_by_entry: list[tuple[str, ...]] = [()] * len(planned_candidates)
     requests: list[TagGenerationRequest] = []
@@ -369,7 +410,7 @@ def _generate_ai_tags_in_batch(
         return generated_tags_by_entry
 
     try:
-        generated_batches = translator.generate_tags_batch(requests)
+        generated_batches = tagging_translator.generate_tags_batch(requests)
     except Exception:
         logger.warning(
             "batch ai-tag generation failed for %s entries; falling back to per-entry tag generation",
@@ -378,7 +419,7 @@ def _generate_ai_tags_in_batch(
         )
         for index, request in zip(request_indexes, requests, strict=True):
             generated_tags_by_entry[index] = tuple(
-                translator.generate_tags(
+                tagging_translator.generate_tags(
                     title=request.title,
                     content=request.content,
                     existing_tags=request.existing_tags,
@@ -423,7 +464,7 @@ def _plan_tag_sync(
     candidate: EntryCandidate,
     plan,
     config: AppConfig,
-    translator: OpenAICompatibleTranslator,
+    tagging_translator: OpenAICompatibleTranslator,
 ) -> TagPlan:
     if not config.ai_tagging_enabled:
         return TagPlan(action="skip", tags=(), reason="ai-tagging-disabled", persist=False)
@@ -446,7 +487,7 @@ def _plan_tag_sync(
     if len(candidate.current_tags) >= config.ai_tagging_max_tags:
         return TagPlan(action="skip", tags=(), reason="existing-tags-sufficient", persist=False)
 
-    generated = translator.generate_tags(
+    generated = tagging_translator.generate_tags(
         title=candidate.translation.source_title,
         content=candidate.translation.source_content,
         existing_tags=candidate.current_tags,

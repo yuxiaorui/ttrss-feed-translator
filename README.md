@@ -117,8 +117,19 @@ docker compose -f docker-compose.example.yml logs -f translator
 ```env
 TRANSLATOR_API_BASE_URL=http://ollama:11434/v1
 TRANSLATOR_API_KEY=ollama
-TRANSLATOR_MODEL=MedAIBase/Tencent-HY-MT1.5:1.8b
+TRANSLATOR_MODEL=HY-MT1.5-1.8B:latest
 ```
+
+如果你想让“翻译”和“AI 补标签”走不同模型，也可以额外设置：
+
+```env
+TRANSLATOR_TAGGING_API_BASE_URL=https://api.openai.com/v1
+TRANSLATOR_TAGGING_API_KEY=replace-me
+TRANSLATOR_TAGGING_MODEL=gpt-4.1-mini
+TRANSLATOR_TAGGING_REQUEST_TIMEOUT_SECONDS=120
+```
+
+这些 `TRANSLATOR_TAGGING_*` 变量默认留空即可；留空时会自动复用翻译那套接口地址、key、模型和超时。
 
 然后执行：
 
@@ -156,6 +167,10 @@ docker compose -f docker-compose.example.yml logs -f translator
 | `TRANSLATOR_API_KEY` | 无 | API key |
 | `TRANSLATOR_MODEL` | 无 | 模型名 |
 | `TRANSLATOR_REQUEST_TIMEOUT_SECONDS` | `120` | 接口超时 |
+| `TRANSLATOR_TAGGING_API_BASE_URL` | `TRANSLATOR_API_BASE_URL` | AI 补标签单独使用的 OpenAI-compatible 接口地址 |
+| `TRANSLATOR_TAGGING_API_KEY` | `TRANSLATOR_API_KEY` | AI 补标签单独使用的 API key |
+| `TRANSLATOR_TAGGING_MODEL` | `TRANSLATOR_MODEL` | AI 补标签单独使用的模型名 |
+| `TRANSLATOR_TAGGING_REQUEST_TIMEOUT_SECONDS` | `TRANSLATOR_REQUEST_TIMEOUT_SECONDS` | AI 补标签单独使用的接口超时 |
 | `TRANSLATOR_MAX_TEXTS_PER_REQUEST` | `40` | 单次请求最多多少个文本块 |
 | `TRANSLATOR_MAX_CHARS_PER_REQUEST` | `8000` | 单次请求最大字符数 |
 | `TRANSLATOR_ENABLE_AI_TAGGING` | `false` | 是否启用 AI 补标签 |
@@ -181,6 +196,7 @@ docker compose -f docker-compose.example.yml logs -f translator
 ### AI 补标签
 
 - 默认关闭，开启 `TRANSLATOR_ENABLE_AI_TAGGING=true` 后才会执行
+- 默认复用翻译模型；如果设置了 `TRANSLATOR_TAGGING_*`，则会改用独立的标签模型
 - 新翻译的多篇短文章会尽量合并到同一轮 AI tag 请求
 - 只会在当前文章 tag 数量少于 `TRANSLATOR_AI_TAGGING_MAX_TAGS` 时触发
 - 会保留上游已有 tag，只追加新的唯一 tag，不覆盖原 tag

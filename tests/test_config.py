@@ -34,6 +34,25 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.ai_tagging_enabled)
         self.assertEqual(config.ai_tagging_max_tags, 6)
         self.assertEqual(config.ai_tagging_language, "zh-CN")
+        self.assertEqual(config.tagging_api_base_url, config.api_base_url)
+        self.assertEqual(config.tagging_api_key, config.api_key)
+        self.assertEqual(config.tagging_model, config.model)
+        self.assertEqual(config.tagging_request_timeout_seconds, config.request_timeout_seconds)
+
+    def test_tagging_backend_can_override_translation_backend(self) -> None:
+        env = _base_env()
+        env["TRANSLATOR_TAGGING_API_BASE_URL"] = "http://ollama:11434/v1"
+        env["TRANSLATOR_TAGGING_API_KEY"] = "ollama"
+        env["TRANSLATOR_TAGGING_MODEL"] = "qwen3:8b"
+        env["TRANSLATOR_TAGGING_REQUEST_TIMEOUT_SECONDS"] = "45"
+
+        with patch.dict(os.environ, env, clear=True):
+            config = AppConfig.from_env()
+
+        self.assertEqual(config.tagging_api_base_url, "http://ollama:11434/v1")
+        self.assertEqual(config.tagging_api_key, "ollama")
+        self.assertEqual(config.tagging_model, "qwen3:8b")
+        self.assertEqual(config.tagging_request_timeout_seconds, 45)
 
 
 def _base_env() -> dict[str, str]:

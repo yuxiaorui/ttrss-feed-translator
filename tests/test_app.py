@@ -78,7 +78,8 @@ class FakeTranslator:
 
 class AppBatchTests(unittest.TestCase):
     def test_collect_translation_queue_paginates_until_batch_is_full(self) -> None:
-        translator = FakeTranslator()
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator()
         conn = FakeConn()
         stats = RunStats()
         config = _make_config(batch_size=2)
@@ -129,7 +130,13 @@ class AppBatchTests(unittest.TestCase):
                         lambda candidate, _: PlannedCandidate(candidate=candidate, plan=plans[candidate.entry_id])
                     )
 
-                    translation_queue = _collect_translation_queue(conn, config, translator, stats)
+                    translation_queue = _collect_translation_queue(
+                        conn,
+                        config,
+                        translation_translator,
+                        tagging_translator,
+                        stats,
+                    )
 
         self.assertEqual(
             fetch_candidates_mock.call_args_list,
@@ -168,7 +175,8 @@ class AppBatchTests(unittest.TestCase):
         )
 
     def test_batch_failure_falls_back_to_per_article_translation(self) -> None:
-        translator = FakeTranslator(fail_when_payload_exceeds=2)
+        translation_translator = FakeTranslator(fail_when_payload_exceeds=2)
+        tagging_translator = FakeTranslator()
         conn = FakeConn()
         stats = RunStats()
         saved_entries: list[tuple[int, str, str]] = []
@@ -192,12 +200,13 @@ class AppBatchTests(unittest.TestCase):
                         _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
                     ],
                     _make_config(),
-                    translator,
+                    translation_translator,
+                    tagging_translator,
                     stats,
                 )
 
         self.assertEqual(
-            translator.calls,
+            translation_translator.calls,
             [
                 ["First title", "First body", "Second title", "Second body"],
                 ["First title", "First body"],
@@ -218,7 +227,8 @@ class AppBatchTests(unittest.TestCase):
         record_error_mock.assert_not_called()
 
     def test_ai_tags_are_batched_across_articles(self) -> None:
-        translator = FakeTranslator()
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator()
         conn = FakeConn()
         stats = RunStats()
         saved_entries: list[tuple[int, tuple[str, ...]]] = []
@@ -240,13 +250,20 @@ class AppBatchTests(unittest.TestCase):
                     _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
                 ],
                 _make_config(ai_tagging_enabled=True),
-                translator,
+                translation_translator,
+                tagging_translator,
                 stats,
             )
 
-        self.assertEqual(translator.calls, [["First title", "First body", "Second title", "Second body"]])
-        self.assertEqual(translator.tag_batch_calls, [["First title", "Second title"]])
-        self.assertEqual(translator.tag_calls, [])
+        self.assertEqual(
+            translation_translator.calls,
+            [["First title", "First body", "Second title", "Second body"]],
+        )
+        self.assertEqual(translation_translator.tag_batch_calls, [])
+        self.assertEqual(translation_translator.tag_calls, [])
+        self.assertEqual(tagging_translator.calls, [])
+        self.assertEqual(tagging_translator.tag_batch_calls, [["First title", "Second title"]])
+        self.assertEqual(tagging_translator.tag_calls, [])
         self.assertEqual(
             saved_entries,
             [
@@ -258,7 +275,8 @@ class AppBatchTests(unittest.TestCase):
         self.assertEqual(stats.tagged, 2)
 
     def test_ai_tag_batch_failure_falls_back_to_per_article_generation(self) -> None:
-        translator = FakeTranslator(fail_tag_batch_when_request_count_exceeds=1)
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator(fail_tag_batch_when_request_count_exceeds=1)
         conn = FakeConn()
         stats = RunStats()
         saved_entries: list[tuple[int, tuple[str, ...]]] = []
@@ -281,12 +299,15 @@ class AppBatchTests(unittest.TestCase):
                         _make_planned_candidate(2, "Second title", "<div>Second body</div>"),
                     ],
                     _make_config(ai_tagging_enabled=True),
-                    translator,
+                    translation_translator,
+                    tagging_translator,
                     stats,
                 )
 
-        self.assertEqual(translator.tag_batch_calls, [["First title", "Second title"]])
-        self.assertEqual(translator.tag_calls, ["First title", "Second title"])
+        self.assertEqual(translation_translator.tag_batch_calls, [])
+        self.assertEqual(translation_translator.tag_calls, [])
+        self.assertEqual(tagging_translator.tag_batch_calls, [["First title", "Second title"]])
+        self.assertEqual(tagging_translator.tag_calls, ["First title", "Second title"])
         self.assertEqual(
             saved_entries,
             [
@@ -340,6 +361,10 @@ def _make_config(*, ai_tagging_enabled: bool = False, batch_size: int = 10) -> A
         api_key="test-key",
         model="gpt-test",
         request_timeout_seconds=120,
+        tagging_api_base_url="https://api.openai.com/v1",
+        tagging_api_key="test-key",
+        tagging_model="gpt-test",
+        tagging_request_timeout_seconds=120,
         max_texts_per_request=40,
         max_chars_per_request=8000,
         ai_tagging_enabled=ai_tagging_enabled,

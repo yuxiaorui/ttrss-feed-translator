@@ -29,11 +29,19 @@ class TagGenerationRequest:
 
 
 class OpenAICompatibleTranslator:
-    def __init__(self, config: AppConfig):
-        self._api_base_url = config.api_base_url
-        self._api_key = config.api_key
-        self._model = config.model
-        self._timeout = config.request_timeout_seconds
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        api_base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        request_timeout_seconds: int | None = None,
+    ):
+        self._api_base_url = (api_base_url or config.api_base_url).rstrip("/")
+        self._api_key = api_key or config.api_key
+        self._model = model or config.model
+        self._timeout = request_timeout_seconds or config.request_timeout_seconds
         self._target_language = config.target_language
         self._source_langs = config.source_langs
         self._max_texts = config.max_texts_per_request
@@ -44,6 +52,16 @@ class OpenAICompatibleTranslator:
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             }
+        )
+
+    @classmethod
+    def for_tagging(cls, config: AppConfig) -> "OpenAICompatibleTranslator":
+        return cls(
+            config,
+            api_base_url=config.tagging_api_base_url,
+            api_key=config.tagging_api_key,
+            model=config.tagging_model,
+            request_timeout_seconds=config.tagging_request_timeout_seconds,
         )
 
     def translate_texts(self, texts: list[str]) -> list[str]:

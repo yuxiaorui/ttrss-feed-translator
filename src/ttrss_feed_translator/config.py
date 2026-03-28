@@ -76,6 +76,10 @@ class AppConfig:
     api_key: str
     model: str
     request_timeout_seconds: int
+    tagging_api_base_url: str
+    tagging_api_key: str
+    tagging_model: str
+    tagging_request_timeout_seconds: int
     max_texts_per_request: int
     max_chars_per_request: int
     ai_tagging_enabled: bool
@@ -88,6 +92,17 @@ class AppConfig:
         api_base_url = os.getenv("TRANSLATOR_API_BASE_URL", "https://api.openai.com/v1").strip()
         log_level = os.getenv("TRANSLATOR_LOG_LEVEL", "INFO").strip().upper()
         target_language = os.getenv("TRANSLATOR_TARGET_LANGUAGE", "zh-CN").strip() or "zh-CN"
+        api_key = _require("TRANSLATOR_API_KEY")
+        model = _require("TRANSLATOR_MODEL")
+        request_timeout_seconds = _parse_int("TRANSLATOR_REQUEST_TIMEOUT_SECONDS", 120, minimum=1)
+        tagging_api_base_url = os.getenv("TRANSLATOR_TAGGING_API_BASE_URL", "").strip() or api_base_url
+        tagging_api_key = os.getenv("TRANSLATOR_TAGGING_API_KEY", "").strip() or api_key
+        tagging_model = os.getenv("TRANSLATOR_TAGGING_MODEL", "").strip() or model
+        tagging_request_timeout_seconds = _parse_int(
+            "TRANSLATOR_TAGGING_REQUEST_TIMEOUT_SECONDS",
+            request_timeout_seconds,
+            minimum=1,
+        )
 
         return cls(
             database_url=_require("TRANSLATOR_DATABASE_URL"),
@@ -101,9 +116,13 @@ class AppConfig:
             require_single_owner=_parse_bool("TRANSLATOR_REQUIRE_SINGLE_OWNER", True),
             dry_run=_parse_bool("TRANSLATOR_DRY_RUN", False),
             api_base_url=api_base_url.rstrip("/"),
-            api_key=_require("TRANSLATOR_API_KEY"),
-            model=_require("TRANSLATOR_MODEL"),
-            request_timeout_seconds=_parse_int("TRANSLATOR_REQUEST_TIMEOUT_SECONDS", 120, minimum=1),
+            api_key=api_key,
+            model=model,
+            request_timeout_seconds=request_timeout_seconds,
+            tagging_api_base_url=tagging_api_base_url.rstrip("/"),
+            tagging_api_key=tagging_api_key,
+            tagging_model=tagging_model,
+            tagging_request_timeout_seconds=tagging_request_timeout_seconds,
             max_texts_per_request=_parse_int("TRANSLATOR_MAX_TEXTS_PER_REQUEST", 40, minimum=1),
             max_chars_per_request=_parse_int("TRANSLATOR_MAX_CHARS_PER_REQUEST", 8000, minimum=100),
             ai_tagging_enabled=_parse_bool("TRANSLATOR_ENABLE_AI_TAGGING", False),
