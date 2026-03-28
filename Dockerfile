@@ -10,7 +10,7 @@ COPY src /app/src
 COPY docker /app/docker
 COPY sql /app/sql
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . -i https://mirrors.aliyun.com/pypi/simple/
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 
