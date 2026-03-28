@@ -8,6 +8,7 @@ from datetime import datetime
 class TranslationRecord:
     entry_id: int
     owner_uid: int
+    user_entry_id: int
     feed_id: int | None
     source_lang: str | None
     target_language: str
@@ -16,6 +17,7 @@ class TranslationRecord:
     source_content: str
     translated_title: str
     translated_content: str
+    generated_tags: tuple[str, ...]
     translated_at: datetime
     reapplied_at: datetime | None
     updated_at: datetime
@@ -26,10 +28,12 @@ class TranslationRecord:
 class EntryCandidate:
     entry_id: int
     owner_uid: int
+    user_entry_id: int
     feed_id: int | None
     feed_title: str
     title: str
     content: str
+    current_tags: tuple[str, ...]
     source_lang: str | None
     date_entered: datetime
     owner_count: int
@@ -43,4 +47,3 @@ class ProcessingPlan:
     source_title: str
     source_content: str
     source_hash: str
-

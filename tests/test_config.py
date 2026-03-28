@@ -27,6 +27,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.feed_ids, (61, 62))
         self.assertEqual(config.source_langs, ())
 
+    def test_ai_tagging_defaults_to_disabled_and_target_language(self) -> None:
+        with patch.dict(os.environ, _base_env(), clear=True):
+            config = AppConfig.from_env()
+
+        self.assertFalse(config.ai_tagging_enabled)
+        self.assertEqual(config.ai_tagging_max_tags, 6)
+        self.assertEqual(config.ai_tagging_language, "zh-CN")
+
 
 def _base_env() -> dict[str, str]:
     return {

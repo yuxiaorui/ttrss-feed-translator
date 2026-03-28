@@ -5,6 +5,7 @@
 - 直接连 PostgreSQL 读新文章
 - `title` 按纯文本翻译
 - `content` 先解析 HTML，只翻译文本节点，再回写原结构
+- 可选启用 AI 补标签：当上游 tag 太少时，额外生成并追加 item tag
 - 用独立追踪表记录原文快照、译文快照、原文 hash、翻译时间
 - 支持按 `owner_uid`、`feed_id`、`lang`、最近入库时间过滤
 
@@ -137,6 +138,9 @@ docker compose -f docker-compose.example.yml logs -f translator
 | `TRANSLATOR_REQUEST_TIMEOUT_SECONDS` | `120` | 接口超时 |
 | `TRANSLATOR_MAX_TEXTS_PER_REQUEST` | `40` | 单次请求最多多少个文本块 |
 | `TRANSLATOR_MAX_CHARS_PER_REQUEST` | `8000` | 单次请求最大字符数 |
+| `TRANSLATOR_ENABLE_AI_TAGGING` | `false` | 是否启用 AI 补标签 |
+| `TRANSLATOR_AI_TAGGING_MAX_TAGS` | `6` | 单篇文章希望最多保留多少个 tag；当前 tag 数量达到这个值就不再补 |
+| `TRANSLATOR_AI_TAGGING_LANGUAGE` | `TRANSLATOR_TARGET_LANGUAGE` | AI 生成 tag 使用的语言；想保持英文 tag 可改成 `en` |
 
 ## 行为说明
 
@@ -150,6 +154,14 @@ docker compose -f docker-compose.example.yml logs -f translator
 - 只提取文本节点翻译
 - `script/style/noscript/code/pre/textarea/svg/math` 默认跳过
 - 标签结构、属性、链接地址不会送去翻译
+
+### AI 补标签
+
+- 默认关闭，开启 `TRANSLATOR_ENABLE_AI_TAGGING=true` 后才会执行
+- 只会在当前文章 tag 数量少于 `TRANSLATOR_AI_TAGGING_MAX_TAGS` 时触发
+- 会保留上游已有 tag，只追加新的唯一 tag，不覆盖原 tag
+- AI 生成的 tag 会写入 `ttrss_tags` 和 `ttrss_user_entries.tag_cache`
+- 追踪表会额外保存 AI 生成的 tag，后续重放译文时也会一起重放这些 tag
 
 ### 不会改的字段
 

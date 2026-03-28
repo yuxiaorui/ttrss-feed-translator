@@ -78,17 +78,21 @@ class AppConfig:
     request_timeout_seconds: int
     max_texts_per_request: int
     max_chars_per_request: int
+    ai_tagging_enabled: bool
+    ai_tagging_max_tags: int
+    ai_tagging_language: str
     log_level: str
 
     @classmethod
     def from_env(cls) -> "AppConfig":
         api_base_url = os.getenv("TRANSLATOR_API_BASE_URL", "https://api.openai.com/v1").strip()
         log_level = os.getenv("TRANSLATOR_LOG_LEVEL", "INFO").strip().upper()
+        target_language = os.getenv("TRANSLATOR_TARGET_LANGUAGE", "zh-CN").strip() or "zh-CN"
 
         return cls(
             database_url=_require("TRANSLATOR_DATABASE_URL"),
             owner_uid=_parse_int("TRANSLATOR_OWNER_UID", 1, minimum=1),
-            target_language=os.getenv("TRANSLATOR_TARGET_LANGUAGE", "zh-CN").strip() or "zh-CN",
+            target_language=target_language,
             source_langs=_parse_csv_strings("TRANSLATOR_SOURCE_LANGS"),
             feed_ids=_require_csv_ints("TRANSLATOR_FEED_IDS"),
             lookback_hours=_parse_int("TRANSLATOR_LOOKBACK_HOURS", 48, minimum=1),
@@ -102,5 +106,8 @@ class AppConfig:
             request_timeout_seconds=_parse_int("TRANSLATOR_REQUEST_TIMEOUT_SECONDS", 120, minimum=1),
             max_texts_per_request=_parse_int("TRANSLATOR_MAX_TEXTS_PER_REQUEST", 40, minimum=1),
             max_chars_per_request=_parse_int("TRANSLATOR_MAX_CHARS_PER_REQUEST", 8000, minimum=100),
+            ai_tagging_enabled=_parse_bool("TRANSLATOR_ENABLE_AI_TAGGING", False),
+            ai_tagging_max_tags=_parse_int("TRANSLATOR_AI_TAGGING_MAX_TAGS", 6, minimum=1),
+            ai_tagging_language=os.getenv("TRANSLATOR_AI_TAGGING_LANGUAGE", target_language).strip() or target_language,
             log_level=log_level or "INFO",
         )

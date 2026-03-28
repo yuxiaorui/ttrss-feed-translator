@@ -4,9 +4,18 @@ from dataclasses import dataclass
 import logging
 
 from ttrss_feed_translator.config import AppConfig
-from ttrss_feed_translator.db import connect, ensure_schema, fetch_candidates, reapply_translation, record_error, save_translation
+from ttrss_feed_translator.db import (
+    connect,
+    ensure_schema,
+    fetch_candidates,
+    reapply_translation,
+    record_error,
+    save_translation,
+    sync_generated_tags,
+)
 from ttrss_feed_translator.html_translate import translate_html
 from ttrss_feed_translator.models import EntryCandidate
+from ttrss_feed_translator.tags import merge_tags
 from ttrss_feed_translator.translator import OpenAICompatibleTranslator
 from ttrss_feed_translator.workflow import plan_entry
 
@@ -20,6 +29,15 @@ class RunStats:
     reapplied: int = 0
     skipped: int = 0
     failed: int = 0
+    tagged: int = 0
+
+
+@dataclass(frozen=True)
+class TagPlan:
+    action: str
+    tags: tuple[str, ...]
+    reason: str
+    persist: bool
 
 
 def run_once(config: AppConfig) -> RunStats:
@@ -57,11 +75,12 @@ def run_once(config: AppConfig) -> RunStats:
                 stats.failed += 1
 
     logger.info(
-        "finished run: translated=%s reapplied=%s skipped=%s failed=%s",
+        "finished run: translated=%s reapplied=%s skipped=%s failed=%s tagged=%s",
         stats.translated,
         stats.reapplied,
         stats.skipped,
         stats.failed,
+        stats.tagged,
     )
     return stats
 
@@ -84,26 +103,42 @@ def _process_candidate(
     )
 
     if plan.action == "skip":
+        tag_plan = _plan_tag_sync(candidate, plan, config, translator)
+        _apply_tag_plan(conn, candidate, config, tag_plan, stats)
         stats.skipped += 1
         return
 
     if plan.action == "reapply":
+        tag_plan = _plan_tag_sync(candidate, plan, config, translator)
         if config.dry_run:
-            logger.info("dry-run: would reapply cached translation for entry %s", candidate.entry_id)
+            logger.info(
+                "dry-run: would reapply cached translation for entry %s%s",
+                candidate.entry_id,
+                _format_tag_plan_suffix(tag_plan),
+            )
         else:
-            reapply_translation(conn, candidate)
+            reapply_translation(
+                conn,
+                candidate,
+                generated_tags=tag_plan.tags if tag_plan.action != "skip" else None,
+                persist_generated_tags=tag_plan.persist,
+            )
+            if tag_plan.action != "skip":
+                stats.tagged += 1
         stats.reapplied += 1
         return
 
     translated_title = _translate_title(plan.source_title, translator)
     translated_content = translate_html(plan.source_content, translator)
+    generated_tags = _generate_ai_tags(candidate, plan.source_title, plan.source_content, config, translator)
 
     if config.dry_run:
         logger.info(
-            "dry-run: would write translation for entry %s (title chars=%s, content chars=%s)",
+            "dry-run: would write translation for entry %s (title chars=%s, content chars=%s%s)",
             candidate.entry_id,
             len(translated_title),
             len(translated_content),
+            f", ai_tags={len(generated_tags)}" if generated_tags else "",
         )
     else:
         save_translation(
@@ -114,8 +149,11 @@ def _process_candidate(
             source_hash=plan.source_hash,
             translated_title=translated_title,
             translated_content=translated_content,
+            generated_tags=generated_tags,
             target_language=config.target_language,
         )
+        if generated_tags:
+            stats.tagged += 1
     stats.translated += 1
 
 
@@ -123,3 +161,98 @@ def _translate_title(title: str, translator: OpenAICompatibleTranslator) -> str:
     if not title.strip():
         return title
     return translator.translate_texts([title])[0]
+
+
+def _generate_ai_tags(
+    candidate: EntryCandidate,
+    source_title: str,
+    source_content: str,
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+) -> tuple[str, ...]:
+    if not config.ai_tagging_enabled:
+        return ()
+    if candidate.owner_count > 1 and config.require_single_owner:
+        return ()
+    if len(candidate.current_tags) >= config.ai_tagging_max_tags:
+        return ()
+
+    generated = translator.generate_tags(
+        title=source_title,
+        content=source_content,
+        existing_tags=candidate.current_tags,
+        max_total_tags=config.ai_tagging_max_tags,
+        language=config.ai_tagging_language,
+    )
+    return tuple(generated)
+
+
+def _plan_tag_sync(
+    candidate: EntryCandidate,
+    plan,
+    config: AppConfig,
+    translator: OpenAICompatibleTranslator,
+) -> TagPlan:
+    if not config.ai_tagging_enabled:
+        return TagPlan(action="skip", tags=(), reason="ai-tagging-disabled", persist=False)
+    if plan.reason == "shared-between-multiple-owners":
+        return TagPlan(action="skip", tags=(), reason="shared-entry", persist=False)
+    if candidate.translation is None:
+        return TagPlan(action="skip", tags=(), reason="no-tracking-record", persist=False)
+
+    if candidate.translation.generated_tags:
+        merged = merge_tags(candidate.current_tags, candidate.translation.generated_tags)
+        if len(merged) > len(candidate.current_tags):
+            return TagPlan(
+                action="apply",
+                tags=candidate.translation.generated_tags,
+                reason="restore-saved-ai-tags",
+                persist=False,
+            )
+        return TagPlan(action="skip", tags=(), reason="saved-ai-tags-already-present", persist=False)
+
+    if len(candidate.current_tags) >= config.ai_tagging_max_tags:
+        return TagPlan(action="skip", tags=(), reason="existing-tags-sufficient", persist=False)
+
+    generated = translator.generate_tags(
+        title=candidate.translation.source_title,
+        content=candidate.translation.source_content,
+        existing_tags=candidate.current_tags,
+        max_total_tags=config.ai_tagging_max_tags,
+        language=config.ai_tagging_language,
+    )
+    if not generated:
+        return TagPlan(action="skip", tags=(), reason="no-new-ai-tags", persist=False)
+
+    return TagPlan(action="generate", tags=tuple(generated), reason="generated-ai-tags", persist=True)
+
+
+def _apply_tag_plan(
+    conn,
+    candidate: EntryCandidate,
+    config: AppConfig,
+    tag_plan: TagPlan,
+    stats: RunStats,
+) -> None:
+    if tag_plan.action == "skip":
+        return
+
+    if config.dry_run:
+        logger.info(
+            "dry-run: would %s %s ai tags for entry %s (reason=%s)",
+            "restore" if tag_plan.action == "apply" else "generate",
+            len(tag_plan.tags),
+            candidate.entry_id,
+            tag_plan.reason,
+        )
+        return
+
+    sync_generated_tags(conn, candidate, tag_plan.tags, persist=tag_plan.persist)
+    stats.tagged += 1
+
+
+def _format_tag_plan_suffix(tag_plan: TagPlan) -> str:
+    if tag_plan.action == "skip":
+        return ""
+    verb = "restore" if tag_plan.action == "apply" else "generate"
+    return f", would {verb} {len(tag_plan.tags)} ai tags"

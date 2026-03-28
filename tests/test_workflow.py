@@ -60,10 +60,12 @@ def _make_candidate(title: str, content: str, translation: TranslationRecord | N
     return EntryCandidate(
         entry_id=1,
         owner_uid=1,
+        user_entry_id=101,
         feed_id=10,
         feed_title="Example Feed",
         title=title,
         content=content,
+        current_tags=("ai",),
         source_lang="en",
         date_entered=datetime(2026, 3, 27, 12, 0, 0),
         owner_count=1,
@@ -83,6 +85,7 @@ def _make_record(
     return TranslationRecord(
         entry_id=1,
         owner_uid=1,
+        user_entry_id=101,
         feed_id=10,
         source_lang="en",
         target_language=target_language,
@@ -91,6 +94,7 @@ def _make_record(
         source_content=source_content,
         translated_title=translated_title,
         translated_content=translated_content,
+        generated_tags=(),
         translated_at=now,
         reapplied_at=None,
         updated_at=now,

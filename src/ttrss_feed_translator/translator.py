@@ -7,9 +7,11 @@ from typing import Iterable
 import requests
 
 from ttrss_feed_translator.config import AppConfig
+from ttrss_feed_translator.tags import extract_text_for_tagging, merge_tags
 
 
 logger = logging.getLogger(__name__)
+TAGGING_SOURCE_TEXT_LIMIT = 4000
 
 
 class TranslationError(RuntimeError):
@@ -43,6 +45,53 @@ class OpenAICompatibleTranslator:
             translated.extend(self._translate_chunk(chunk))
         return translated
 
+    def generate_tags(
+        self,
+        *,
+        title: str,
+        content: str,
+        existing_tags: tuple[str, ...],
+        max_total_tags: int,
+        language: str,
+    ) -> list[str]:
+        remaining_slots = max_total_tags - len(existing_tags)
+        if remaining_slots <= 0:
+            return []
+
+        source_excerpt = extract_text_for_tagging(content, max_chars=TAGGING_SOURCE_TEXT_LIMIT)
+        payload = {
+            "title": title,
+            "content_excerpt": source_excerpt,
+            "existing_tags": list(existing_tags),
+            "max_new_tags": remaining_slots,
+            "tag_language": language,
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an RSS tagging engine. "
+                    f"Generate at most {remaining_slots} additional article tags in {language}. "
+                    "Return JSON only. The output must be a JSON array of strings. "
+                    "Prefer concrete people, companies, products, places, technologies, and themes. "
+                    "Avoid generic tags like news, latest, article, update, and analysis. "
+                    "Avoid repeating any existing tags. Keep tags concise."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False),
+            },
+        ]
+
+        generated = self._request_string_array(messages)
+        normalized = merge_tags((), generated, limit=remaining_slots)
+        filtered = [
+            tag for tag in normalized if len(merge_tags(existing_tags, (tag,))) > len(existing_tags)
+        ]
+        logger.debug("generated %s ai tags", len(filtered))
+        return filtered
+
     def _chunk_texts(self, texts: list[str]) -> Iterable[list[str]]:
         chunk: list[str] = []
         char_count = 0
@@ -61,12 +110,9 @@ class OpenAICompatibleTranslator:
             yield chunk
 
     def _translate_chunk(self, texts: list[str]) -> list[str]:
-        url = f"{self._api_base_url}/chat/completions"
         source_hint = ", ".join(self._source_langs) if self._source_langs else "auto-detect source language"
-        payload = {
-            "model": self._model,
-            "temperature": 0,
-            "messages": [
+        parsed = self._request_string_array(
+            [
                 {
                     "role": "system",
                     "content": (
@@ -80,7 +126,22 @@ class OpenAICompatibleTranslator:
                     "role": "user",
                     "content": json.dumps(texts, ensure_ascii=False),
                 },
-            ],
+            ]
+        )
+        if len(parsed) != len(texts):
+            raise TranslationError(
+                f"translator returned {len(parsed)} items for {len(texts)} source texts"
+            )
+
+        logger.debug("translated %s text nodes", len(texts))
+        return parsed
+
+    def _request_string_array(self, messages: list[dict[str, str]]) -> list[str]:
+        url = f"{self._api_base_url}/chat/completions"
+        payload = {
+            "model": self._model,
+            "temperature": 0,
+            "messages": messages,
         }
 
         response = self._session.post(url, json=payload, timeout=self._timeout)
@@ -92,17 +153,10 @@ class OpenAICompatibleTranslator:
         except (KeyError, IndexError, TypeError) as exc:
             raise TranslationError(f"unexpected response payload: {data}") from exc
 
-        parsed = _parse_translation_payload(content)
-        if len(parsed) != len(texts):
-            raise TranslationError(
-                f"translator returned {len(parsed)} items for {len(texts)} source texts"
-            )
-
-        logger.debug("translated %s text nodes", len(texts))
-        return parsed
+        return _parse_string_array_payload(content)
 
 
-def _parse_translation_payload(content: str) -> list[str]:
+def _parse_string_array_payload(content: str) -> list[str]:
     cleaned = content.strip()
 
     if cleaned.startswith("```"):
