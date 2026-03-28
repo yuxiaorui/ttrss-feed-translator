@@ -8,11 +8,12 @@ from ttrss_feed_translator.app import (
     PlannedCandidate,
     RunStats,
     _collect_translation_queue,
+    _process_candidate_safely,
     _process_translation_batch,
     _translate_planned_candidates_in_batch,
 )
 from ttrss_feed_translator.config import AppConfig
-from ttrss_feed_translator.models import EntryCandidate, ProcessingPlan
+from ttrss_feed_translator.models import EntryCandidate, ProcessingPlan, TranslationRecord
 
 
 class FakeConn:
@@ -352,6 +353,39 @@ class AppBatchTests(unittest.TestCase):
         self.assertEqual(preview_mock.call_args.kwargs["generated_tags"], ("AI", "Startups"))
         save_translation_mock.assert_not_called()
 
+    def test_dry_run_logs_preview_for_already_translated_skip(self) -> None:
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator()
+        conn = FakeConn()
+        stats = RunStats()
+        planned_candidate = PlannedCandidate(
+            candidate=_make_translated_candidate(),
+            plan=ProcessingPlan(
+                action="skip",
+                reason="already-translated",
+                source_title="Original title",
+                source_content="<p>Original body</p>",
+                source_hash="hash-1",
+            ),
+        )
+
+        with patch("ttrss_feed_translator.app._log_dry_run_preview") as preview_mock:
+            _process_candidate_safely(
+                conn,
+                planned_candidate,
+                _make_config(dry_run=True),
+                translation_translator,
+                tagging_translator,
+                stats,
+            )
+
+        preview_mock.assert_called_once()
+        self.assertEqual(preview_mock.call_args.kwargs["action"], "skip (already-translated)")
+        self.assertEqual(preview_mock.call_args.kwargs["source_title"], "Original title")
+        self.assertEqual(preview_mock.call_args.kwargs["translated_title"], "已翻译标题")
+        self.assertEqual(preview_mock.call_args.kwargs["translated_content"], "<p>已翻译正文</p>")
+        self.assertEqual(stats.skipped, 1)
+
 
 def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedCandidate:
     candidate = EntryCandidate(
@@ -376,6 +410,42 @@ def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedC
         source_hash=f"hash-{entry_id}",
     )
     return PlannedCandidate(candidate=candidate, plan=plan)
+
+
+def _make_translated_candidate() -> EntryCandidate:
+    now = datetime(2026, 3, 28, 0, 0, 0)
+    translation = TranslationRecord(
+        entry_id=1,
+        owner_uid=1,
+        user_entry_id=1,
+        feed_id=61,
+        source_lang="en",
+        target_language="zh-CN",
+        source_hash="hash-1",
+        source_title="Original title",
+        source_content="<p>Original body</p>",
+        translated_title="已翻译标题",
+        translated_content="<p>已翻译正文</p>",
+        generated_tags=(),
+        translated_at=now,
+        reapplied_at=None,
+        updated_at=now,
+        last_error=None,
+    )
+    return EntryCandidate(
+        entry_id=1,
+        owner_uid=1,
+        user_entry_id=1,
+        feed_id=61,
+        feed_title="Example Feed",
+        title="已翻译标题",
+        content="<p>已翻译正文</p>",
+        current_tags=(),
+        source_lang="en",
+        date_entered=now,
+        owner_count=1,
+        translation=translation,
+    )
 
 
 def _make_config(

@@ -298,6 +298,19 @@ def _process_candidate(
 
     if plan.action == "skip":
         tag_plan = _plan_tag_sync(candidate, plan, config, tagging_translator)
+        if config.dry_run and _should_log_skip_dry_run_preview(candidate, plan):
+            _log_dry_run_preview(
+                entry_id=candidate.entry_id,
+                feed_title=candidate.feed_title or str(candidate.feed_id),
+                source_title=plan.source_title,
+                translated_title=candidate.title,
+                source_content=plan.source_content,
+                translated_content=candidate.content,
+                current_tags=candidate.current_tags,
+                generated_tags=tag_plan.tags,
+                action=f"skip ({plan.reason})",
+                tag_action=tag_plan.action,
+            )
         _apply_tag_plan(conn, candidate, config, tag_plan, stats)
         stats.skipped += 1
         return
@@ -537,6 +550,10 @@ def _apply_tag_plan(
 
     sync_generated_tags(conn, candidate, tag_plan.tags, persist=tag_plan.persist)
     stats.tagged += 1
+
+
+def _should_log_skip_dry_run_preview(candidate: EntryCandidate, plan: ProcessingPlan) -> bool:
+    return plan.reason == "already-translated" and candidate.translation is not None
 
 
 def _log_dry_run_preview(
