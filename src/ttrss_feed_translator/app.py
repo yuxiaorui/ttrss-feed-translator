@@ -18,12 +18,14 @@ from ttrss_feed_translator.html_translate import (
     translate_title_and_html,
 )
 from ttrss_feed_translator.models import EntryCandidate, ProcessingPlan
-from ttrss_feed_translator.tags import merge_tags
+from ttrss_feed_translator.tags import extract_text_for_tagging, merge_tags
 from ttrss_feed_translator.translator import OpenAICompatibleTranslator, TagGenerationRequest
 from ttrss_feed_translator.workflow import plan_entry
 
 
 logger = logging.getLogger(__name__)
+DRY_RUN_TITLE_PREVIEW_CHARS = 160
+DRY_RUN_CONTENT_PREVIEW_CHARS = 280
 
 
 @dataclass
@@ -303,10 +305,17 @@ def _process_candidate(
     if plan.action == "reapply":
         tag_plan = _plan_tag_sync(candidate, plan, config, tagging_translator)
         if config.dry_run:
-            logger.info(
-                "dry-run: would reapply cached translation for entry %s%s",
-                candidate.entry_id,
-                _format_tag_plan_suffix(tag_plan),
+            _log_dry_run_preview(
+                entry_id=candidate.entry_id,
+                feed_title=candidate.feed_title or str(candidate.feed_id),
+                source_title=plan.source_title,
+                translated_title=candidate.translation.translated_title,
+                source_content=plan.source_content,
+                translated_content=candidate.translation.translated_content,
+                current_tags=candidate.current_tags,
+                generated_tags=tag_plan.tags,
+                action="reapply cached translation",
+                tag_action=tag_plan.action,
             )
         else:
             reapply_translation(
@@ -339,12 +348,17 @@ def _process_candidate(
         )
 
     if config.dry_run:
-        logger.info(
-            "dry-run: would write translation for entry %s (title chars=%s, content chars=%s%s)",
-            candidate.entry_id,
-            len(translated_title),
-            len(translated_content),
-            f", ai_tags={len(generated_tags)}" if generated_tags else "",
+        _log_dry_run_preview(
+            entry_id=candidate.entry_id,
+            feed_title=candidate.feed_title or str(candidate.feed_id),
+            source_title=plan.source_title,
+            translated_title=translated_title,
+            source_content=plan.source_content,
+            translated_content=translated_content,
+            current_tags=candidate.current_tags,
+            generated_tags=generated_tags,
+            action="write translation",
+            tag_action="generate" if generated_tags else "skip",
         )
     else:
         save_translation(
@@ -512,11 +526,12 @@ def _apply_tag_plan(
 
     if config.dry_run:
         logger.info(
-            "dry-run: would %s %s ai tags for entry %s (reason=%s)",
+            "dry-run: would %s %s ai tags for entry %s (reason=%s, tags=%s)",
             "restore" if tag_plan.action == "apply" else "generate",
             len(tag_plan.tags),
             candidate.entry_id,
             tag_plan.reason,
+            _format_tag_list(tag_plan.tags),
         )
         return
 
@@ -524,8 +539,59 @@ def _apply_tag_plan(
     stats.tagged += 1
 
 
-def _format_tag_plan_suffix(tag_plan: TagPlan) -> str:
-    if tag_plan.action == "skip":
-        return ""
-    verb = "restore" if tag_plan.action == "apply" else "generate"
-    return f", would {verb} {len(tag_plan.tags)} ai tags"
+def _log_dry_run_preview(
+    *,
+    entry_id: int,
+    feed_title: str,
+    source_title: str,
+    translated_title: str,
+    source_content: str,
+    translated_content: str,
+    current_tags: tuple[str, ...],
+    generated_tags: tuple[str, ...],
+    action: str,
+    tag_action: str,
+) -> None:
+    logger.info(
+        "dry-run preview for entry %s (%s)\n"
+        "action: %s\n"
+        "tag_action: %s\n"
+        "source_title: %s\n"
+        "translated_title: %s\n"
+        "source_content: %s\n"
+        "translated_content: %s\n"
+        "current_tags: %s\n"
+        "generated_tags: %s",
+        entry_id,
+        feed_title,
+        action,
+        tag_action,
+        _preview_text(source_title, max_chars=DRY_RUN_TITLE_PREVIEW_CHARS),
+        _preview_text(translated_title, max_chars=DRY_RUN_TITLE_PREVIEW_CHARS),
+        _preview_html(source_content, max_chars=DRY_RUN_CONTENT_PREVIEW_CHARS),
+        _preview_html(translated_content, max_chars=DRY_RUN_CONTENT_PREVIEW_CHARS),
+        _format_tag_list(current_tags),
+        _format_tag_list(generated_tags),
+    )
+
+
+def _preview_html(html: str, *, max_chars: int) -> str:
+    return _preview_text(
+        extract_text_for_tagging(html, max_chars=max_chars),
+        max_chars=max_chars,
+    )
+
+
+def _preview_text(text: str, *, max_chars: int) -> str:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return "<empty>"
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 3].rstrip()}..."
+
+
+def _format_tag_list(tags: tuple[str, ...]) -> str:
+    if not tags:
+        return "<none>"
+    return ", ".join(tags)

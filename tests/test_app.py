@@ -49,6 +49,7 @@ class FakeTranslator:
             "First body": "正文一",
             "Second title": "标题二",
             "Second body": "正文二",
+            "Extra details": "额外细节",
         }
         return [mapping[text] for text in texts]
 
@@ -319,6 +320,38 @@ class AppBatchTests(unittest.TestCase):
         self.assertEqual(stats.failed, 0)
         record_error_mock.assert_not_called()
 
+    def test_dry_run_logs_translation_and_tag_previews(self) -> None:
+        translation_translator = FakeTranslator()
+        tagging_translator = FakeTranslator()
+        conn = FakeConn()
+        stats = RunStats()
+
+        with patch("ttrss_feed_translator.app._log_dry_run_preview") as preview_mock:
+            with patch("ttrss_feed_translator.app.save_translation") as save_translation_mock:
+                _process_translation_batch(
+                    conn,
+                    [
+                        _make_planned_candidate(
+                            1,
+                            "First title",
+                            "<p>First body</p><div>Extra details</div>",
+                        ),
+                    ],
+                    _make_config(ai_tagging_enabled=True, dry_run=True),
+                    translation_translator,
+                    tagging_translator,
+                    stats,
+                )
+
+        preview_mock.assert_called_once()
+        self.assertEqual(preview_mock.call_args.kwargs["entry_id"], 1)
+        self.assertEqual(preview_mock.call_args.kwargs["source_title"], "First title")
+        self.assertEqual(preview_mock.call_args.kwargs["translated_title"], "标题一")
+        self.assertEqual(preview_mock.call_args.kwargs["source_content"], "<p>First body</p><div>Extra details</div>")
+        self.assertEqual(preview_mock.call_args.kwargs["translated_content"], "<p>正文一</p><div>额外细节</div>")
+        self.assertEqual(preview_mock.call_args.kwargs["generated_tags"], ("AI", "Startups"))
+        save_translation_mock.assert_not_called()
+
 
 def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedCandidate:
     candidate = EntryCandidate(
@@ -345,7 +378,12 @@ def _make_planned_candidate(entry_id: int, title: str, content: str) -> PlannedC
     return PlannedCandidate(candidate=candidate, plan=plan)
 
 
-def _make_config(*, ai_tagging_enabled: bool = False, batch_size: int = 10) -> AppConfig:
+def _make_config(
+    *,
+    ai_tagging_enabled: bool = False,
+    batch_size: int = 10,
+    dry_run: bool = False,
+) -> AppConfig:
     return AppConfig(
         database_url="postgresql://postgres:password@db:5432/postgres",
         owner_uid=1,
@@ -356,7 +394,7 @@ def _make_config(*, ai_tagging_enabled: bool = False, batch_size: int = 10) -> A
         batch_size=batch_size,
         loop_interval_seconds=300,
         require_single_owner=True,
-        dry_run=False,
+        dry_run=dry_run,
         api_base_url="https://api.openai.com/v1",
         api_key="test-key",
         model="gpt-test",

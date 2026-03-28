@@ -84,6 +84,8 @@ set +a
 TRANSLATOR_DRY_RUN=true python -m ttrss_feed_translator --once
 ```
 
+`dry-run` 不会写库，但会在日志里打印原标题/译文标题、正文文本摘录，以及 AI tag 预览，方便直接对比质量。
+
 ### 4. 正式执行
 
 ```bash
