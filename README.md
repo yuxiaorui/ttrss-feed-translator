@@ -53,6 +53,7 @@ cp translator.env.example translator.env
 至少需要改这些：
 
 - `TRANSLATOR_DATABASE_URL`
+- `TRANSLATOR_FEED_IDS`
 - `TRANSLATOR_API_BASE_URL`
 - `TRANSLATOR_API_KEY`
 - `TRANSLATOR_MODEL`
@@ -61,10 +62,17 @@ cp translator.env.example translator.env
 默认会：
 
 - 只处理 `owner_uid=1`
-- 只处理 `lang=en`
+- 只处理你白名单里的 `feed_id`
 - 只扫最近 `48` 小时入库文章
 - 每轮最多处理 `10` 篇
 - 遇到多用户共享文章时跳过
+
+推荐做法：
+
+- 把 `TRANSLATOR_FEED_IDS` 设成你确认是英文源的 feed id 白名单
+- `TRANSLATOR_SOURCE_LANGS` 默认留空，不依赖 `ttrss_entries.lang`
+
+这样即使 RSSHub 或上游 feed 把中文内容错误标成 `en`，也不会被误翻。
 
 ### 3. 先 dry-run
 
@@ -116,8 +124,8 @@ docker compose -f docker-compose.example.yml logs -f translator
 | `TRANSLATOR_DATABASE_URL` | 无 | PostgreSQL 连接串 |
 | `TRANSLATOR_OWNER_UID` | `1` | 只处理这个 TT-RSS 用户的订阅视图 |
 | `TRANSLATOR_TARGET_LANGUAGE` | `zh-CN` | 目标语言 |
-| `TRANSLATOR_SOURCE_LANGS` | `en` | 只处理这些源语言，逗号分隔，留空表示不过滤 |
-| `TRANSLATOR_FEED_IDS` | 空 | 只处理指定 feed id，逗号分隔 |
+| `TRANSLATOR_FEED_IDS` | 无 | feed 白名单，至少填一个；只处理这些指定 feed id |
+| `TRANSLATOR_SOURCE_LANGS` | 空 | 可选附加过滤：只处理这些源语言，逗号分隔；默认不依赖 `ttrss_entries.lang` |
 | `TRANSLATOR_LOOKBACK_HOURS` | `48` | 只扫最近入库文章 |
 | `TRANSLATOR_BATCH_SIZE` | `10` | 每轮最多处理多少篇 |
 | `TRANSLATOR_LOOP_INTERVAL_SECONDS` | `300` | sidecar 每轮间隔秒数 |
@@ -182,4 +190,3 @@ docker compose -f docker-compose.example.yml logs -f translator
 - `ttrss_feeds`
 
 查询策略是用 `ttrss_user_entries.owner_uid + feed_id` 限定目标文章，再回写对应的 `ttrss_entries`。
-

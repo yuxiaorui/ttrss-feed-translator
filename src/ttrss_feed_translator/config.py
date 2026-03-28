@@ -53,6 +53,13 @@ def _parse_csv_ints(name: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in raw.split(",") if item.strip())
 
 
+def _require_csv_ints(name: str) -> tuple[int, ...]:
+    values = _parse_csv_ints(name)
+    if not values:
+        raise ValueError(f"{name} must contain at least one feed id")
+    return values
+
+
 @dataclass(frozen=True)
 class AppConfig:
     database_url: str
@@ -82,8 +89,8 @@ class AppConfig:
             database_url=_require("TRANSLATOR_DATABASE_URL"),
             owner_uid=_parse_int("TRANSLATOR_OWNER_UID", 1, minimum=1),
             target_language=os.getenv("TRANSLATOR_TARGET_LANGUAGE", "zh-CN").strip() or "zh-CN",
-            source_langs=_parse_csv_strings("TRANSLATOR_SOURCE_LANGS", ("en",)),
-            feed_ids=_parse_csv_ints("TRANSLATOR_FEED_IDS"),
+            source_langs=_parse_csv_strings("TRANSLATOR_SOURCE_LANGS"),
+            feed_ids=_require_csv_ints("TRANSLATOR_FEED_IDS"),
             lookback_hours=_parse_int("TRANSLATOR_LOOKBACK_HOURS", 48, minimum=1),
             batch_size=_parse_int("TRANSLATOR_BATCH_SIZE", 10, minimum=1),
             loop_interval_seconds=_parse_int("TRANSLATOR_LOOP_INTERVAL_SECONDS", 300, minimum=1),

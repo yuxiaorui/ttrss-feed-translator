@@ -26,6 +26,18 @@ def run_once(config: AppConfig) -> RunStats:
     stats = RunStats()
     translator = OpenAICompatibleTranslator(config)
 
+    source_langs = ",".join(config.source_langs) if config.source_langs else "<disabled>"
+    feed_ids = ",".join(str(feed_id) for feed_id in config.feed_ids)
+    logger.info(
+        "running with filters: owner_uid=%s feed_ids=%s lookback_hours=%s batch_size=%s source_langs=%s dry_run=%s",
+        config.owner_uid,
+        feed_ids,
+        config.lookback_hours,
+        config.batch_size,
+        source_langs,
+        config.dry_run,
+    )
+
     with connect(config.database_url) as conn:
         ensure_schema(conn)
         conn.commit()
