@@ -103,55 +103,53 @@ class TranslatorBatchTests(unittest.TestCase):
 
         self.assertEqual(parsed, [["AI"], ["Robotics", "Startups"]])
 
-    def test_request_json_accepts_content_array(self) -> None:
+    def test_request_json_uses_responses_api_output_text(self) -> None:
         translator = OpenAICompatibleTranslator(_make_config())
         response = Mock()
         response.json.return_value = {
             "id": "resp_123",
-            "object": "chat.completion",
+            "object": "response",
             "model": "gpt-test",
-            "choices": [
+            "status": "completed",
+            "output": [
                 {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "[\"你好\"]"},
-                        ],
-                    },
-                    "finish_reason": "stop",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "[\"你好\"]"},
+                    ],
                 }
             ],
         }
 
-        with patch.object(translator._session, "post", return_value=response):
+        with patch.object(translator._session, "post", return_value=response) as post_mock:
             parsed = translator._request_json([{"role": "user", "content": "[\"hello\"]"}])
 
         self.assertEqual(parsed, ["你好"])
+        self.assertEqual(post_mock.call_args.args[0], "https://api.openai.com/v1/responses")
+        self.assertEqual(
+            post_mock.call_args.kwargs["json"]["input"],
+            [{"role": "user", "content": [{"type": "input_text", "text": "[\"hello\"]"}]}],
+        )
 
-    def test_request_json_reports_missing_content_clearly(self) -> None:
+    def test_request_json_reports_missing_output_text_clearly(self) -> None:
         translator = OpenAICompatibleTranslator(_make_config())
         response = Mock()
         response.json.return_value = {
             "id": "resp_123",
-            "object": "chat.completion",
+            "object": "response",
             "model": "gpt-test",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant"},
-                    "finish_reason": "stop",
-                }
-            ],
+            "status": "completed",
+            "output": [],
         }
 
         with patch.object(translator._session, "post", return_value=response):
             with self.assertRaises(TranslationError) as exc_info:
                 translator._request_json([{"role": "user", "content": "[\"hello\"]"}])
 
-        self.assertIn("assistant message did not include content", str(exc_info.exception))
-        self.assertIn('"finish_reason": "stop"', str(exc_info.exception))
-        self.assertIn('"message_keys": ["role"]', str(exc_info.exception))
+        self.assertIn("responses api response did not include any output text", str(exc_info.exception))
+        self.assertIn('"status": "completed"', str(exc_info.exception))
+        self.assertIn('"output_count": 0', str(exc_info.exception))
 
 
 def _make_config() -> AppConfig:

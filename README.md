@@ -175,13 +175,13 @@ docker compose -f docker-compose.example.yml logs -f translator
 | `TRANSLATOR_LOOP_INTERVAL_SECONDS` | `300` | sidecar 每轮间隔秒数 |
 | `TRANSLATOR_REQUIRE_SINGLE_OWNER` | `true` | 如果文章被多个 owner 共享则跳过 |
 | `TRANSLATOR_DRY_RUN` | `false` | 只打印动作，不写库 |
-| `TRANSLATOR_API_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible 接口地址 |
+| `TRANSLATOR_API_BASE_URL` | `https://api.openai.com/v1` | 需兼容 OpenAI `Responses API` 的接口地址 |
 | `TRANSLATOR_API_KEY` | 无 | API key |
 | `TRANSLATOR_MODEL` | 无 | 模型名 |
 | `TRANSLATOR_REQUEST_TIMEOUT_SECONDS` | `120` | 接口超时 |
 | `TRANSLATOR_MERCURY_FULLTEXT_API_BASE_URL` | 空 | 可选的 `mercury_fulltext` 兼容接口地址；配置后会在翻译前请求 `/parser?url=...` 抓全文 |
 | `TRANSLATOR_MERCURY_FULLTEXT_REQUEST_TIMEOUT_SECONDS` | `30` | 全文接口超时 |
-| `TRANSLATOR_TAGGING_API_BASE_URL` | `TRANSLATOR_API_BASE_URL` | AI 补标签单独使用的 OpenAI-compatible 接口地址 |
+| `TRANSLATOR_TAGGING_API_BASE_URL` | `TRANSLATOR_API_BASE_URL` | AI 补标签单独使用的 `Responses API` 兼容接口地址 |
 | `TRANSLATOR_TAGGING_API_KEY` | `TRANSLATOR_API_KEY` | AI 补标签单独使用的 API key |
 | `TRANSLATOR_TAGGING_MODEL` | `TRANSLATOR_MODEL` | AI 补标签单独使用的模型名 |
 | `TRANSLATOR_TAGGING_REQUEST_TIMEOUT_SECONDS` | `TRANSLATOR_REQUEST_TIMEOUT_SECONDS` | AI 补标签单独使用的接口超时 |
