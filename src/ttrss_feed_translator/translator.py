@@ -253,12 +253,7 @@ class OpenAICompatibleTranslator:
         response = self._session.post(url, json=payload, timeout=self._timeout)
         response.raise_for_status()
         data = response.json()
-
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise TranslationError(f"unexpected response payload: {data}") from exc
-
+        content = _extract_chat_completion_content(data)
         return _parse_json_payload(content)
 
 
@@ -324,6 +319,114 @@ def _parse_json_payload(content: str) -> object:
         cleaned = "\n".join(lines).strip()
 
     return json.loads(cleaned)
+
+
+def _extract_chat_completion_content(data: object) -> str:
+    if not isinstance(data, dict):
+        raise TranslationError(
+            f"unexpected response payload type: {type(data).__name__}"
+        )
+
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise TranslationError(
+            "chat completion response did not include any choices "
+            f"(payload_summary={_summarize_chat_completion_payload(data)})"
+        )
+
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise TranslationError(
+            "chat completion choice had unexpected type "
+            f"{type(first_choice).__name__} "
+            f"(payload_summary={_summarize_chat_completion_payload(data)})"
+        )
+
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        raise TranslationError(
+            "chat completion choice did not include a message object "
+            f"(payload_summary={_summarize_chat_completion_payload(data)})"
+        )
+
+    content = message.get("content")
+    if content is None:
+        raise TranslationError(
+            "assistant message did not include content "
+            f"(payload_summary={_summarize_chat_completion_payload(data)})"
+        )
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        text_parts = _extract_text_parts_from_content_array(content)
+        if text_parts:
+            return "".join(text_parts)
+        raise TranslationError(
+            "assistant message content array did not include any text parts "
+            f"(payload_summary={_summarize_chat_completion_payload(data)})"
+        )
+
+    raise TranslationError(
+        "assistant message content had unsupported type "
+        f"{type(content).__name__} "
+        f"(payload_summary={_summarize_chat_completion_payload(data)})"
+    )
+
+
+def _extract_text_parts_from_content_array(content: list[object]) -> list[str]:
+    text_parts: list[str] = []
+
+    for item in content:
+        if isinstance(item, str):
+            text_parts.append(item)
+            continue
+
+        if not isinstance(item, dict):
+            continue
+
+        text = item.get("text")
+        if isinstance(text, str):
+            text_parts.append(text)
+            continue
+
+        if isinstance(text, dict):
+            value = text.get("value")
+            if isinstance(value, str):
+                text_parts.append(value)
+
+    return text_parts
+
+
+def _summarize_chat_completion_payload(data: dict[str, object]) -> str:
+    summary: dict[str, object] = {}
+    for key in ("id", "object", "model", "created"):
+        if key in data:
+            summary[key] = data[key]
+
+    choices = data.get("choices")
+    if isinstance(choices, list):
+        summary["choices_count"] = len(choices)
+        if choices:
+            first_choice = choices[0]
+            if isinstance(first_choice, dict):
+                if "finish_reason" in first_choice:
+                    summary["finish_reason"] = first_choice["finish_reason"]
+
+                message = first_choice.get("message")
+                if isinstance(message, dict):
+                    summary["message_keys"] = sorted(message.keys())
+                    if "content" in message:
+                        content = message["content"]
+                        summary["content_type"] = type(content).__name__
+                        if isinstance(content, list):
+                            summary["content_part_types"] = [
+                                item.get("type") if isinstance(item, dict) else type(item).__name__
+                                for item in content[:5]
+                            ]
+
+    return json.dumps(summary, ensure_ascii=False, sort_keys=True)
 
 
 def _parse_string_array_payload(content: object) -> list[str]:

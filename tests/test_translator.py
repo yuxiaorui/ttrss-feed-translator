@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ttrss_feed_translator.config import AppConfig
 from ttrss_feed_translator.translator import (
@@ -102,6 +102,56 @@ class TranslatorBatchTests(unittest.TestCase):
         parsed = _parse_string_matrix_payload({"tags": [["AI"], ["Robotics", "Startups"]]})
 
         self.assertEqual(parsed, [["AI"], ["Robotics", "Startups"]])
+
+    def test_request_json_accepts_content_array(self) -> None:
+        translator = OpenAICompatibleTranslator(_make_config())
+        response = Mock()
+        response.json.return_value = {
+            "id": "resp_123",
+            "object": "chat.completion",
+            "model": "gpt-test",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "[\"你好\"]"},
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+        with patch.object(translator._session, "post", return_value=response):
+            parsed = translator._request_json([{"role": "user", "content": "[\"hello\"]"}])
+
+        self.assertEqual(parsed, ["你好"])
+
+    def test_request_json_reports_missing_content_clearly(self) -> None:
+        translator = OpenAICompatibleTranslator(_make_config())
+        response = Mock()
+        response.json.return_value = {
+            "id": "resp_123",
+            "object": "chat.completion",
+            "model": "gpt-test",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+        with patch.object(translator._session, "post", return_value=response):
+            with self.assertRaises(TranslationError) as exc_info:
+                translator._request_json([{"role": "user", "content": "[\"hello\"]"}])
+
+        self.assertIn("assistant message did not include content", str(exc_info.exception))
+        self.assertIn('"finish_reason": "stop"', str(exc_info.exception))
+        self.assertIn('"message_keys": ["role"]', str(exc_info.exception))
 
 
 def _make_config() -> AppConfig:
