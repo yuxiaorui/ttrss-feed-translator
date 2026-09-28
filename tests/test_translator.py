@@ -8,12 +8,56 @@ from ttrss_feed_translator.translator import (
     OpenAICompatibleTranslator,
     TagGenerationRequest,
     TranslationError,
+    _parse_indexed_translation_payload,
     _parse_tag_generation_payload,
     _parse_string_matrix_payload,
 )
 
 
 class TranslatorBatchTests(unittest.TestCase):
+    def test_translate_texts_retries_smaller_chunks_on_mangled_result(self) -> None:
+        translator = OpenAICompatibleTranslator(_make_config())
+        calls: list[list[str]] = []
+
+        def fake_translate_chunk(chunk):
+            calls.append(list(chunk))
+            if len(chunk) > 1:
+                raise TranslationError(
+                    f"translator returned {len(chunk) + 1} items for {len(chunk)} source texts"
+                )
+            return [f"zh:{chunk[0]}"]
+
+        with patch.object(translator, "_translate_chunk", side_effect=fake_translate_chunk):
+            translated = translator.translate_texts(["a", "b", "c"])
+
+        self.assertEqual(translated, ["zh:a", "zh:b", "zh:c"])
+        self.assertEqual(calls, [["a", "b", "c"], ["a"], ["b", "c"], ["b"], ["c"]])
+
+    def test_translate_texts_raises_when_a_single_text_keeps_failing(self) -> None:
+        translator = OpenAICompatibleTranslator(_make_config())
+
+        with patch.object(
+            translator,
+            "_translate_chunk",
+            side_effect=TranslationError("translation response is not a JSON object keyed by index"),
+        ) as chunk_mock:
+            with self.assertRaises(TranslationError):
+                translator.translate_texts(["a", "b"])
+
+        # whole chunk, then the left half (which re-raises before the right half runs)
+        self.assertEqual(chunk_mock.call_count, 2)
+
+    def test_parse_indexed_translation_payload_orders_by_index(self) -> None:
+        parsed = _parse_indexed_translation_payload({"1": "二", "0": "一"}, 2)
+
+        self.assertEqual(parsed, ["一", "二"])
+
+    def test_parse_indexed_translation_payload_rejects_incomplete_result(self) -> None:
+        with self.assertRaises(TranslationError) as exc_info:
+            _parse_indexed_translation_payload({"0": "一"}, 2)
+
+        self.assertIn("missing keys: 1", str(exc_info.exception))
+
     def test_generate_tags_batch_normalizes_each_article(self) -> None:
         translator = OpenAICompatibleTranslator(_make_config())
 

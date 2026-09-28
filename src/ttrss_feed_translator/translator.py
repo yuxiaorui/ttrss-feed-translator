@@ -70,7 +70,7 @@ class OpenAICompatibleTranslator:
 
         translated: list[str] = []
         for chunk in self._chunk_texts(texts):
-            translated.extend(self._translate_chunk(chunk))
+            translated.extend(self._translate_chunk_with_retries(chunk))
         return translated
 
     def generate_tags(
@@ -156,32 +156,54 @@ class OpenAICompatibleTranslator:
         if chunk:
             yield chunk
 
+    def _translate_chunk_with_retries(self, texts: list[str]) -> list[str]:
+        try:
+            return self._translate_chunk(texts)
+        except (TranslationError, ValueError):
+            # A smaller request is far less likely to come back mangled, and a
+            # single text either works or the failure is real.
+            if len(texts) <= 1:
+                raise
+
+            logger.warning(
+                "translation chunk response was unusable for %s texts; retrying in smaller chunks",
+                len(texts),
+            )
+            split_index = len(texts) // 2
+            return self._translate_chunk_with_retries(
+                texts[:split_index]
+            ) + self._translate_chunk_with_retries(texts[split_index:])
+
     def _translate_chunk(self, texts: list[str]) -> list[str]:
         source_hint = ", ".join(self._source_langs) if self._source_langs else "auto-detect source language"
-        parsed = self._request_string_array(
+        # Key by index instead of relying on array position: models routinely merge
+        # or split array items, which shifts every element after the change.
+        indexed_texts = {str(index): text for index, text in enumerate(texts)}
+
+        parsed = self._request_json(
             [
                 {
                     "role": "system",
                     "content": (
                         "You are a translation engine. "
                         f"Translate each input string from {source_hint} to {self._target_language}. "
-                        "Return JSON only. The output must be a JSON array of strings with exactly the same length "
-                        "and order as the input array. Do not add markdown fences or commentary."
+                        "The input is a JSON object mapping an index to a string. "
+                        "Return JSON only: an object with exactly the same keys, where each value is the "
+                        "translation of the string under that key. "
+                        "Never merge, split, drop, reorder, or renumber the keys. "
+                        "Do not add markdown fences or commentary."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(texts, ensure_ascii=False),
+                    "content": json.dumps(indexed_texts, ensure_ascii=False),
                 },
             ]
         )
-        if len(parsed) != len(texts):
-            raise TranslationError(
-                f"translator returned {len(parsed)} items for {len(texts)} source texts"
-            )
 
+        translated = _parse_indexed_translation_payload(parsed, len(texts))
         logger.debug("translated %s text nodes", len(texts))
-        return parsed
+        return translated
 
     def _generate_tags_chunk(self, requests: list["_PreparedTagGenerationRequest"]) -> list[list[str]]:
         parsed = self._request_tag_results(
@@ -229,10 +251,6 @@ class OpenAICompatibleTranslator:
             return self._generate_tags_chunk_with_retries(
                 requests[:split_index]
             ) + self._generate_tags_chunk_with_retries(requests[split_index:])
-
-    def _request_string_array(self, messages: list[dict[str, str]]) -> list[str]:
-        parsed = self._request_json(messages)
-        return _parse_string_array_payload(parsed)
 
     def _request_tag_results(
         self,
@@ -429,15 +447,34 @@ def _summarize_chat_completion_payload(data: dict[str, object]) -> str:
     return json.dumps(summary, ensure_ascii=False, sort_keys=True)
 
 
-def _parse_string_array_payload(content: object) -> list[str]:
-    parsed = content
-    if isinstance(parsed, dict) and "translations" in parsed:
-        parsed = parsed["translations"]
+def _parse_indexed_translation_payload(content: object, expected_count: int) -> list[str]:
+    if isinstance(content, dict) and "translations" in content:
+        content = content["translations"]
 
-    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
-        raise TranslationError("translation response is not a JSON string array")
+    if not isinstance(content, dict):
+        raise TranslationError("translation response is not a JSON object keyed by index")
 
-    return list(parsed)
+    translated: list[str] = []
+    missing_keys: list[str] = []
+
+    for index in range(expected_count):
+        key = str(index)
+        value = content.get(key)
+        if value is None:
+            missing_keys.append(key)
+            continue
+
+        if not isinstance(value, str):
+            raise TranslationError(f"translation response value for key {key} is not a string")
+
+        translated.append(value)
+
+    if missing_keys:
+        raise TranslationError(
+            "translation response is missing keys: " + ", ".join(missing_keys[:5])
+        )
+
+    return translated
 
 
 def _parse_tag_generation_payload(
